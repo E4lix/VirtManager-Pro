@@ -22,6 +22,8 @@ import {
   Clock,
   AlertTriangle,
   Folder,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { api } from './api';
 import VncViewer from './components/VncViewer';
@@ -41,9 +43,13 @@ export default function App() {
   const [templates, setTemplates] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [usersList, setUsersList] = useState([]);
-  const [selectedVm, setSelectedVm] = useState(null);
+  const [selectedVmId, setSelectedVmId] = useState(null);
+  const [expandedNodes, setExpandedNodes] = useState({ 'local-kvm': true, 'remote-pve-cluster': true });
   const [activeVmTab, setActiveVmTab] = useState('summary');
   const [loading, setLoading] = useState(true);
+
+  // Derived selectedVm - always stays on the user's selected VM
+  const selectedVm = vms.find((v) => v.id === selectedVmId) || (vms.length > 0 ? vms[0] : null);
 
   // Modals state
   const [modalCreateVm, setModalCreateVm] = useState(false);
@@ -105,12 +111,12 @@ export default function App() {
       if (hRes.data) setHypervisors(hRes.data);
       if (vRes.data) {
         setVms(vRes.data);
-        if (!selectedVm && vRes.data.length > 0) {
-          setSelectedVm(vRes.data[0]);
-        } else if (selectedVm) {
-          const updated = vRes.data.find((v) => v.id === selectedVm.id);
-          if (updated) setSelectedVm(updated);
-        }
+        setSelectedVmId((prevId) => {
+          if (prevId && vRes.data.some((v) => v.id === prevId)) {
+            return prevId;
+          }
+          return vRes.data.length > 0 ? vRes.data[0].id : null;
+        });
       }
       if (dRes.data) setDisks(dRes.data);
       if (pRes.data) setPools(pRes.data);
@@ -162,7 +168,7 @@ export default function App() {
   const handleDeleteVm = async (id) => {
     if (confirm(`Confirmez-vous la suppression de la VM '${id}' ?`)) {
       await api.deleteVm(id);
-      setSelectedVm(null);
+      setSelectedVmId(null);
       refreshAll();
     }
   };
@@ -342,7 +348,7 @@ export default function App() {
       <div className="main-layout">
         {/* Sidebar */}
         <aside className="sidebar">
-          <div className="sidebar-section-title">Datacenter & Nœuds</div>
+          <div className="sidebar-section-title">Datacenter & Vues</div>
 
           <div
             className={`nav-item ${currentTab === 'dashboard' ? 'active' : ''}`}
@@ -357,7 +363,7 @@ export default function App() {
             onClick={() => setCurrentTab('vms')}
           >
             <Box size={18} />
-            <span>Machines Virtuelles</span>
+            <span>Toutes les VM</span>
             <span className="nav-item-badge">{vms.length}</span>
           </div>
 
@@ -377,6 +383,114 @@ export default function App() {
             <HardDrive size={18} />
             <span>Stockage & Disques</span>
             <span className="nav-item-badge">{disks.length}</span>
+          </div>
+
+          {/* Proxmox-Style Resource Tree: Nodes & VMs in the Nav */}
+          <div className="sidebar-section-title">Arborescence Datacenter</div>
+          <div style={{ padding: '0 0.5rem', marginBottom: '0.5rem' }}>
+            {hypervisors.map((hv) => {
+              const hvVms = vms.filter((v) => v.hypervisor_id === hv.id);
+              const isExpanded = expandedNodes[hv.id] !== false;
+              return (
+                <div key={hv.id} style={{ marginBottom: '0.4rem' }}>
+                  {/* Node Header */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.35rem',
+                      padding: '0.4rem 0.5rem',
+                      borderRadius: '5px',
+                      cursor: 'pointer',
+                      fontSize: '0.785rem',
+                      fontWeight: 600,
+                      color: 'var(--text-main)',
+                      background: 'rgba(255, 255, 255, 0.03)',
+                    }}
+                    onClick={() => {
+                      setExpandedNodes((prev) => ({ ...prev, [hv.id]: !isExpanded }));
+                    }}
+                  >
+                    {isExpanded ? <ChevronDown size={13} color="#94a3b8" /> : <ChevronRight size={13} color="#94a3b8" />}
+                    <Server size={14} color="#38bdf8" />
+                    <span
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        flex: 1,
+                      }}
+                      title={hv.name}
+                    >
+                      {hv.name}
+                    </span>
+                    <span className="nav-item-badge" style={{ fontSize: '0.65rem', padding: '0.05rem 0.35rem' }}>
+                      {hvVms.length}
+                    </span>
+                  </div>
+
+                  {/* Nested VM Items */}
+                  {isExpanded && (
+                    <div style={{ paddingLeft: '0.75rem', marginTop: '0.2rem' }}>
+                      {hvVms.map((vm) => {
+                        const isVmActive = selectedVmId === vm.id && currentTab === 'vms';
+                        return (
+                          <div
+                            key={vm.id}
+                            className={`nav-item ${isVmActive ? 'active' : ''}`}
+                            style={{
+                              padding: '0.35rem 0.5rem',
+                              fontSize: '0.765rem',
+                              gap: '0.45rem',
+                              borderRadius: '4px',
+                              marginBottom: '0.15rem',
+                              borderLeft: isVmActive ? '3px solid var(--primary)' : '3px solid transparent',
+                            }}
+                            onClick={() => {
+                              setSelectedVmId(vm.id);
+                              setCurrentTab('vms');
+                            }}
+                          >
+                            <span
+                              className={`status-dot ${
+                                vm.state === 'running'
+                                  ? 'badge-running'
+                                  : vm.state === 'stopped'
+                                  ? 'badge-stopped'
+                                  : 'badge-paused'
+                              }`}
+                              style={{ width: '6px', height: '6px', flexShrink: 0 }}
+                            />
+                            <Box size={13} style={{ flexShrink: 0, color: isVmActive ? '#38bdf8' : '#94a3b8' }} />
+                            <span
+                              style={{
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                              title={vm.name}
+                            >
+                              {vm.name}
+                            </span>
+                          </div>
+                        );
+                      })}
+                      {hvVms.length === 0 && (
+                        <div
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            fontSize: '0.7rem',
+                            color: 'var(--text-dark)',
+                          }}
+                        >
+                          Aucune VM sur cet hôte
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           <div className="sidebar-section-title">Automatisation</div>
@@ -642,7 +756,7 @@ export default function App() {
                             <button
                               className="btn btn-secondary btn-sm"
                               onClick={() => {
-                                setSelectedVm(vm);
+                                setSelectedVmId(vm.id);
                                 setCurrentTab('vms');
                                 setActiveVmTab('console');
                               }}
@@ -688,7 +802,7 @@ export default function App() {
                     {vms.map((vm) => (
                       <div
                         key={vm.id}
-                        onClick={() => setSelectedVm(vm)}
+                        onClick={() => setSelectedVmId(vm.id)}
                         style={{
                           padding: '0.85rem 1rem',
                           borderBottom: '1px solid var(--border-color)',
