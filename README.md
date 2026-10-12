@@ -116,3 +116,12 @@ Pour plus d'informations, consultez les dossiers de documentation :
 - [Documentation de l'API REST](file:///home/adiack/Documents/5A/projet-virtu/docs/API_DOCUMENTATION.md)
 - [Manuel Utilisateur & Démonstration](file:///home/adiack/Documents/5A/projet-virtu/docs/USER_MANUAL.md)
 - [Guide de Déploiement](file:///home/adiack/Documents/5A/projet-virtu/docs/DEPLOYMENT.md)
+
+---
+
+## 👥 Auteurs du Projet
+- **GRANIER Emmy**
+- **DIACK Amadou**
+- **MINVIELLE Melvin**
+- **DJEMAI Yacine**
+
