@@ -1,0 +1,17 @@
+services:
+  virtmanager-platform:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: virtmanager-pro
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - RUST_LOG=virtmanager_backend=info
+    volumes:
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock:ro
+      - /var/lib/libvirt/images:/var/lib/libvirt/images
+      - ./data:/app/backend/data
+    restart: unless-stopped
+    privileged: true

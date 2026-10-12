@@ -1,0 +1,485 @@
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
+use axum::Json;
+use std::sync::Arc;
+
+use crate::api::auth::extract_claims;
+use crate::models::{
+    ApiResponse, AssignVmRequest, CloneVmRequest, CreateVmRequest, UserRole,
+    VirtualMachine, VmState,
+};
+use crate::state::AppState;
+
+#[utoipa::path(
+    get,
+    path = "/api/vms",
+    responses(
+        (status = 200, description = "List of virtual machines", body = ApiResponse<Vec<VirtualMachine>>)
+    )
+)]
+pub async fn list_vms(
+    headers: HeaderMap,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
+    let store = state.store.read().await;
+
+    let vms: Vec<VirtualMachine> = store
+        .vms
+        .values()
+        .filter(|vm| {
+            if let Some(ref c) = claims {
+                if c.role == UserRole::User {
+                    // Standard user only sees their own assigned VMs
+                    return vm.assigned_to.as_deref() == Some(&c.username);
+                }
+            }
+            true // Admin or unauthenticated demo sees all
+        })
+        .cloned()
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: "Machines virtuelles récupérées".to_string(),
+            data: Some(vms),
+        }),
+    )
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vms/{id}",
+    responses(
+        (status = 200, description = "VM details", body = ApiResponse<VirtualMachine>),
+        (status = 404, description = "VM not found")
+    )
+)]
+pub async fn get_vm(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let store = state.store.read().await;
+
+    if let Some(vm) = store.vms.get(&id) {
+        return (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: "Détails de la machine virtuelle".to_string(),
+                data: Some(vm.clone()),
+            }),
+        );
+    }
+
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiResponse {
+            success: false,
+            message: "Machine virtuelle introuvable".to_string(),
+            data: None,
+        }),
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/vms",
+    request_body = CreateVmRequest,
+    responses(
+        (status = 201, description = "VM created", body = ApiResponse<VirtualMachine>),
+        (status = 400, description = "Failed to create VM")
+    )
+)]
+pub async fn create_vm(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<CreateVmRequest>,
+) -> impl IntoResponse {
+    let driver = state.get_driver(&payload.hypervisor_id).await;
+
+    if let Some(drv) = driver {
+        match drv.create_vm(&payload).await {
+            Ok(mut new_vm) => {
+                new_vm.assigned_to = payload.assigned_to.clone();
+                let mut store = state.store.write().await;
+                store.vms.insert(new_vm.id.clone(), new_vm.clone());
+
+                return (
+                    StatusCode::CREATED,
+                    Json(ApiResponse {
+                        success: true,
+                        message: "Machine virtuelle créée et démarrée avec succès".to_string(),
+                        data: Some(new_vm),
+                    }),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse {
+                        success: false,
+                        message: format!("Erreur lors de la création de la VM: {}", e),
+                        data: None,
+                    }),
+                );
+            }
+        }
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ApiResponse {
+            success: false,
+            message: "Hyperviseur spécifié introuvable".to_string(),
+            data: None,
+        }),
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/vms/{id}/start",
+    responses(
+        (status = 200, description = "VM started", body = ApiResponse<bool>),
+        (status = 404, description = "VM not found")
+    )
+)]
+pub async fn start_vm(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let (hypervisor_id, vm_name) = {
+        let store = state.store.read().await;
+        if let Some(vm) = store.vms.get(&id) {
+            (vm.hypervisor_id.clone(), vm.name.clone())
+        } else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse {
+                    success: false,
+                    message: "VM introuvable".to_string(),
+                    data: None,
+                }),
+            );
+        }
+    };
+
+    if let Some(drv) = state.get_driver(&hypervisor_id).await {
+        let _ = drv.start_vm(&vm_name).await;
+    }
+
+    {
+        let mut store = state.store.write().await;
+        if let Some(vm) = store.vms.get_mut(&id) {
+            vm.state = VmState::Running;
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: "Machine virtuelle démarrée".to_string(),
+            data: Some(true),
+        }),
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/vms/{id}/stop",
+    responses(
+        (status = 200, description = "VM stopped", body = ApiResponse<bool>),
+        (status = 404, description = "VM not found")
+    )
+)]
+pub async fn stop_vm(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let (hypervisor_id, vm_name) = {
+        let store = state.store.read().await;
+        if let Some(vm) = store.vms.get(&id) {
+            (vm.hypervisor_id.clone(), vm.name.clone())
+        } else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse {
+                    success: false,
+                    message: "VM introuvable".to_string(),
+                    data: None,
+                }),
+            );
+        }
+    };
+
+    if let Some(drv) = state.get_driver(&hypervisor_id).await {
+        let _ = drv.stop_vm(&vm_name, false).await;
+    }
+
+    {
+        let mut store = state.store.write().await;
+        if let Some(vm) = store.vms.get_mut(&id) {
+            vm.state = VmState::Stopped;
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: "Signal d'arrêt envoyé à la machine virtuelle".to_string(),
+            data: Some(true),
+        }),
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/vms/{id}/reboot",
+    responses(
+        (status = 200, description = "VM rebooted", body = ApiResponse<bool>),
+        (status = 404, description = "VM not found")
+    )
+)]
+pub async fn reboot_vm(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let (hypervisor_id, vm_name) = {
+        let store = state.store.read().await;
+        if let Some(vm) = store.vms.get(&id) {
+            (vm.hypervisor_id.clone(), vm.name.clone())
+        } else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse {
+                    success: false,
+                    message: "VM introuvable".to_string(),
+                    data: None,
+                }),
+            );
+        }
+    };
+
+    if let Some(drv) = state.get_driver(&hypervisor_id).await {
+        let _ = drv.reboot_vm(&vm_name).await;
+    }
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: "Redémarrage de la machine virtuelle initié".to_string(),
+            data: Some(true),
+        }),
+    )
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/vms/{id}",
+    responses(
+        (status = 200, description = "VM deleted", body = ApiResponse<bool>),
+        (status = 404, description = "VM not found")
+    )
+)]
+pub async fn delete_vm(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let (hypervisor_id, vm_name) = {
+        let store = state.store.read().await;
+        if let Some(vm) = store.vms.get(&id) {
+            (vm.hypervisor_id.clone(), vm.name.clone())
+        } else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse {
+                    success: false,
+                    message: "VM introuvable".to_string(),
+                    data: None,
+                }),
+            );
+        }
+    };
+
+    if let Some(drv) = state.get_driver(&hypervisor_id).await {
+        let _ = drv.delete_vm(&vm_name).await;
+    }
+
+    {
+        let mut store = state.store.write().await;
+        store.vms.remove(&id);
+    }
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: "Machine virtuelle supprimée".to_string(),
+            data: Some(true),
+        }),
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/vms/{id}/clone",
+    request_body = CloneVmRequest,
+    responses(
+        (status = 201, description = "VM cloned", body = ApiResponse<VirtualMachine>),
+        (status = 400, description = "Clone failed")
+    )
+)]
+pub async fn clone_vm(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<CloneVmRequest>,
+) -> impl IntoResponse {
+    let (hypervisor_id, vm_name) = {
+        let store = state.store.read().await;
+        if let Some(vm) = store.vms.get(&id) {
+            (vm.hypervisor_id.clone(), vm.name.clone())
+        } else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse {
+                    success: false,
+                    message: "VM source introuvable".to_string(),
+                    data: None,
+                }),
+            );
+        }
+    };
+
+    if let Some(drv) = state.get_driver(&hypervisor_id).await {
+        match drv.clone_vm(&vm_name, &payload.new_name).await {
+            Ok(mut cloned_vm) => {
+                cloned_vm.assigned_to = payload.assigned_to.clone();
+                let mut store = state.store.write().await;
+                store.vms.insert(cloned_vm.id.clone(), cloned_vm.clone());
+
+                return (
+                    StatusCode::CREATED,
+                    Json(ApiResponse {
+                        success: true,
+                        message: "Machine virtuelle clonée avec succès".to_string(),
+                        data: Some(cloned_vm),
+                    }),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse {
+                        success: false,
+                        message: format!("Échec du clonage: {}", e),
+                        data: None,
+                    }),
+                );
+            }
+        }
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ApiResponse {
+            success: false,
+            message: "Hyperviseur indisponible".to_string(),
+            data: None,
+        }),
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/vms/{id}/assign",
+    request_body = AssignVmRequest,
+    responses(
+        (status = 200, description = "VM assigned to user", body = ApiResponse<VirtualMachine>),
+        (status = 404, description = "VM not found")
+    )
+)]
+pub async fn assign_vm(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AssignVmRequest>,
+) -> impl IntoResponse {
+    let mut store = state.store.write().await;
+
+    if let Some(vm) = store.vms.get_mut(&id) {
+        vm.assigned_to = Some(payload.username.clone());
+        let updated = vm.clone();
+
+        return (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: format!("VM attribuée à l'utilisateur {}", payload.username),
+                data: Some(updated),
+            }),
+        );
+    }
+
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiResponse {
+            success: false,
+            message: "Machine virtuelle introuvable".to_string(),
+            data: None,
+        }),
+    )
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vms/{id}/vnc",
+    responses(
+        (status = 200, description = "VNC connection info", body = ApiResponse<serde_json::Value>),
+        (status = 404, description = "VM not found")
+    )
+)]
+pub async fn get_vm_vnc(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let (hypervisor_id, vm_name, vnc_port) = {
+        let store = state.store.read().await;
+        if let Some(vm) = store.vms.get(&id) {
+            (vm.hypervisor_id.clone(), vm.name.clone(), vm.vnc_port)
+        } else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse {
+                    success: false,
+                    message: "VM introuvable".to_string(),
+                    data: None,
+                }),
+            );
+        }
+    };
+
+    let resolved_port = if let Some(drv) = state.get_driver(&hypervisor_id).await {
+        drv.get_vnc_info(&vm_name).await.map(|i| i.port).unwrap_or(5900)
+    } else {
+        vnc_port.unwrap_or(5900)
+    };
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: "Informations VNC disponibles".to_string(),
+            data: Some(serde_json::json!({
+                "vm_id": id,
+                "vnc_port": resolved_port,
+                "ws_path": format!("/api/vnc/ws/{}", id),
+                "novnc_url": format!("/novnc/vnc_lite.html?path=api/vnc/ws/{}", id)
+            })),
+        }),
+    )
+}

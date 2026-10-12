@@ -1,0 +1,37 @@
+
+
+
+
+
+  → D Gestionnaire de VM
+
+      → Créer / démarrer / éteindre / donner une VM
+
+      → Allier VNC
+
+      → gérer le vrx / disques
+
+
+  → D Gestionnaire Hyperviseur
+
+      → Ajouter / Enlever un hyperviseur local / distant
+
+
+Rust : backend
+
+Nodejs : Front
+
+
+→ D gestionnaire de "template"
+
+    → terraform
+
+    → ansible
+
+    → packer
+API REST doccumente
+
+ésumé du projet décrit :Il s'agit d'un projet de groupe de 4 à 5 personnes portant sur la gestion de machines virtuelles, avec :Un gestionnaire de VM : création, démarrage, arrêt, attribution de VM, accès VNC, gestion des disques/vrx.Un gestionnaire d'hyperviseur : ajout/retrait d'hyperviseurs locaux ou distants.Un gestionnaire de templates : transformation de templates via Ansible et Packer.Stack technique :Rust pour le backendNode.js pour le frontend
+
+
+ Cahier des Charges : Plateforme de Gestion d'Infrastructure Virtualisée1. Contexte et Objectifs du ProjetContexte : Développement d'une application web permettant de centraliser et d'automatiser la gestion d'une infrastructure de machines virtuelles (VM) et d'hyperviseurs.Objectif principal : Fournir une interface unique et sécurisée pour gérer le cycle de vie des VM, les hyperviseurs sous-jacents et la création de modèles (templates) d'images standardisés.Équipe : Groupe de 4 à 5 personnes.2. Périmètre Fonctionnel (Backlog Produit)Le système est divisé en trois modules principaux :Module A : Gestionnaire de Machines Virtuelles (VM)Cycle de vie des VM : Créer, démarrer, arrêter et supprimer une machine virtuelle.Attribution / Clonage : Attribuer une VM à un utilisateur ou cloner une VM existante à partir d'un modèle.Accès à distance : Intégration d'un client VNC (Virtual Network Computing) dans l'interface web pour accéder à la console graphique de la VM.Gestion du stockage : Gestion des disques virtuels (création, extension, suppression). Note : Le terme "vrx" noté au tableau fait probablement référence à un format de disque virtuel (ex: .vmdk, .vdi, .qcow2) ou à une ressource spécifique à l'hyperviseur cible.Module B : Gestionnaire d'HyperviseursEnregistrement : Ajouter un nouvel hyperviseur au pool de ressources (support des hyperviseurs locaux et distants, ex: Proxmox VE, VMware ESXi, KVM/libvirt).Suppression : Retirer un hyperviseur du système (avec vérification qu'aucune VM active n'y est hébergée).Surveillance : (Recommandé) Afficher l'état de santé et les ressources disponibles (CPU, RAM, Stockage) de chaque hyperviseur.Module C : Gestionnaire de Templates (Modèles)Création de templates : Définir des images de base standardisées pour le déploiement rapide de VM.Automatisation avec Packer : Utiliser HashiCorp Packer pour construire automatiquement les images de machines virtuelles.Configuration avec Ansible : Utiliser Ansible pour provisionner et configurer le système d'exploitation et les logiciels à l'intérieur du template lors de sa création (transformation du template).3. Stack Technique ImposéeBackend : RustJustification : Performance, sécurité mémoire, et excellente gestion des appels système et des connexions réseau (idéal pour interagir avec des API d'hyperviseurs et des sockets VNC).Frontend : Node.js (avec un framework associé comme React, Vue.js ou Svelte, à définir par l'équipe)Justification : Écosystème riche, gestion asynchrone efficace pour les mises à jour en temps réel (état des VM), et intégration aisée de clients VNC web (ex: noVNC).4. Exigences Non-FonctionnellesSécurité : Authentification et gestion des rôles (ex: Administrateur vs Utilisateur standard).Les communications entre le backend, les hyperviseurs et les VM doivent être chiffrées (TLS/SSH).Performance : Le backend Rust doit gérer les requêtes de manière asynchrone pour ne pas bloquer l'interface lors d'opérations longues (ex: création d'une VM via Packer).Extensibilité : L'architecture doit permettre d'ajouter facilement le support de nouveaux types d'hyperviseurs à l'avenir (utilisation de traits/interfaces en Rust).Ergonomie : Interface web claire, avec un tableau de bord récapitulatif de l'état de l'infrastructure.5. Livrables AttendusCode source : Dépôt Git (ex: GitHub/GitLab) avec un historique de commits réparti entre les membres du groupe.Documentation technique : Architecture du système (schémas).Instructions d'installation et de déploiement (idéalement via Docker ou un script d'automatisation).Documentation de l'API backend.Manuel utilisateur : Guide d'utilisation de l'interface web.Démonstration : Présentation fonctionnelle du projet (scénario de bout en bout : ajout d'hyperviseur → création de template avec Packer/Ansible → déploiement d'une VM → accès VNC).

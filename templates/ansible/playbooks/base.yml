@@ -1,0 +1,32 @@
+---
+- name: Configuration de base du template de VM
+  hosts: all
+  become: yes
+  tasks:
+    - name: Mise à jour des dépôts de paquets
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Installation des paquets essentiels
+      apt:
+        name:
+          - curl
+          - wget
+          - htop
+          - net-tools
+          - git
+          - sudo
+          - qemu-guest-agent
+        state: present
+
+    - name: Activation de l'agent QEMU
+      systemd:
+        name: qemu-guest-agent
+        state: started
+        enabled: yes
+
+    - name: Nettoyage des caches apt pour réduire la taille de l'image
+      apt:
+        autoclean: yes
+        autoremove: yes
