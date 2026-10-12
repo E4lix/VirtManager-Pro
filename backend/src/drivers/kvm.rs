@@ -200,17 +200,29 @@ impl HypervisorDriver for KvmDriver {
             }
         }
 
-        // Parse VNC port from dumpxml
+        // Parse VNC port from vncdisplay (real RFB display)
         let mut vnc_port = None;
-        if let Ok(xml) = self.run_virsh(&["dumpxml", name_or_id]).await {
-            for line in xml.lines() {
-                if line.contains("<graphics") && (line.contains("type='vnc'") || line.contains("type='spice'")) {
-                    if let Some(port_idx) = line.find("port='") {
-                        let rem = &line[port_idx + 6..];
-                        if let Some(end_idx) = rem.find('\'') {
-                            if let Ok(p) = rem[..end_idx].parse::<u16>() {
-                                if p > 0 {
-                                    vnc_port = Some(p);
+        if let Ok(out) = self.run_virsh(&["vncdisplay", name_or_id]).await {
+            let s = out.trim();
+            if let Some(idx) = s.rfind(':') {
+                if let Ok(disp) = s[idx + 1..].parse::<u16>() {
+                    vnc_port = Some(5900 + disp);
+                }
+            }
+        }
+
+        // Fallback to dumpxml (specifically type='vnc')
+        if vnc_port.is_none() {
+            if let Ok(xml) = self.run_virsh(&["dumpxml", name_or_id]).await {
+                for line in xml.lines() {
+                    if line.contains("<graphics") && line.contains("type='vnc'") {
+                        if let Some(port_idx) = line.find("port='") {
+                            let rem = &line[port_idx + 6..];
+                            if let Some(end_idx) = rem.find('\'') {
+                                if let Ok(p) = rem[..end_idx].parse::<u16>() {
+                                    if p > 0 {
+                                        vnc_port = Some(p);
+                                    }
                                 }
                             }
                         }
@@ -365,8 +377,20 @@ impl HypervisorDriver for KvmDriver {
     }
 
     async fn get_vnc_info(&self, vm_id: &str) -> Result<VncInfo> {
-        let vm = self.get_vm(vm_id).await?;
-        let port = vm.vnc_port.unwrap_or(5900);
+        let mut port = 5900;
+        if let Ok(out) = self.run_virsh(&["vncdisplay", vm_id]).await {
+            let s = out.trim();
+            if let Some(idx) = s.rfind(':') {
+                if let Ok(disp) = s[idx + 1..].parse::<u16>() {
+                    port = 5900 + disp;
+                }
+            }
+        } else if let Ok(vm) = self.get_vm(vm_id).await {
+            if let Some(p) = vm.vnc_port {
+                port = p;
+            }
+        }
+
         Ok(VncInfo {
             host: "127.0.0.1".to_string(),
             port,

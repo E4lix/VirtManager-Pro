@@ -14,29 +14,26 @@ pub async fn vnc_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_vnc_socket(socket, vm_id, state))
+    ws.protocols(["binary"])
+      .on_upgrade(move |socket| handle_vnc_socket(socket, vm_id, state))
 }
 
 async fn handle_vnc_socket(socket: WebSocket, vm_id: String, state: Arc<AppState>) {
     info!("VNC WebSocket connection initiated for VM: {}", vm_id);
 
-    // Get VM and its VNC port
+    // Get live VNC port directly from hypervisor driver
     let vnc_port = {
-        let store = state.store.read().await;
-        if let Some(vm) = store.vms.get(&vm_id) {
-            vm.vnc_port.unwrap_or(5900)
-        } else {
-            // Check in active KVM driver
-            let local_driver = state.get_driver("local-kvm").await;
-            if let Some(driver) = local_driver {
-                if let Ok(info) = driver.get_vnc_info(&vm_id).await {
-                    info.port
-                } else {
-                    5900
-                }
+        let local_driver = state.get_driver("local-kvm").await;
+        if let Some(driver) = local_driver {
+            if let Ok(info) = driver.get_vnc_info(&vm_id).await {
+                info.port
             } else {
-                5900
+                let store = state.store.read().await;
+                store.vms.get(&vm_id).and_then(|v| v.vnc_port).unwrap_or(5900)
             }
+        } else {
+            let store = state.store.read().await;
+            store.vms.get(&vm_id).and_then(|v| v.vnc_port).unwrap_or(5900)
         }
     };
 
@@ -81,7 +78,7 @@ async fn handle_vnc_socket(socket: WebSocket, vm_id: String, state: Arc<AppState
 
     // Forward TCP -> WebSocket
     let tcp_to_ws = tokio::spawn(async move {
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; 65536];
         loop {
             match tcp_read.read(&mut buf).await {
                 Ok(0) => break, // EOF
