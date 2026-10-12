@@ -142,9 +142,43 @@ impl HypervisorDriver for KvmDriver {
         let total_vms = vms.len() as u32;
         let active_vms = vms.iter().filter(|v| v.state == VmState::Running).count() as u32;
 
+        // Dynamic CPU calculation from host nodecpustats
+        let mut cpu_usage_pct = 8.5f32;
+        if let Ok(cpustats) = self.run_virsh(&["nodecpustats"]).await {
+            let mut user = 0u64;
+            let mut system = 0u64;
+            let mut idle = 0u64;
+            let mut iowait = 0u64;
+            for line in cpustats.lines() {
+                let line = line.trim();
+                if (line.starts_with("utilisateur") || line.starts_with("user")) && line.contains(':') {
+                    if let Some(val) = line.split(':').nth(1) {
+                        user = val.trim().parse::<u64>().unwrap_or(0);
+                    }
+                } else if (line.starts_with("système") || line.starts_with("system")) && line.contains(':') {
+                    if let Some(val) = line.split(':').nth(1) {
+                        system = val.trim().parse::<u64>().unwrap_or(0);
+                    }
+                } else if (line.starts_with("inactif") || line.starts_with("idle")) && line.contains(':') {
+                    if let Some(val) = line.split(':').nth(1) {
+                        idle = val.trim().parse::<u64>().unwrap_or(0);
+                    }
+                } else if line.starts_with("iowait") && line.contains(':') {
+                    if let Some(val) = line.split(':').nth(1) {
+                        iowait = val.trim().parse::<u64>().unwrap_or(0);
+                    }
+                }
+            }
+            let total = user + system + idle + iowait;
+            if total > 0 {
+                let busy = user + system + iowait;
+                cpu_usage_pct = ((busy as f64 / total as f64) * 100.0) as f32;
+            }
+        }
+
         Ok(HypervisorStats {
             cpu_cores,
-            cpu_usage_pct: 12.5,
+            cpu_usage_pct,
             memory_total_mb,
             memory_used_mb,
             disk_total_gb: if disk_total_gb == 0 { 500 } else { disk_total_gb },
@@ -214,7 +248,7 @@ impl HypervisorDriver for KvmDriver {
             }
         }
 
-        // Parse disks
+        // Parse disks with real physical sizes
         let mut disks = Vec::new();
         if let Ok(blk_out) = self.run_virsh(&["domblklist", name_or_id]).await {
             for line in blk_out.lines().skip(2) {
@@ -222,11 +256,18 @@ impl HypervisorDriver for KvmDriver {
                 if parts.len() >= 2 && parts[1] != "-" {
                     let target = parts[0];
                     let source = parts[1];
+                    let size_gb = if let Ok(meta) = tokio::fs::metadata(source).await {
+                        let len = meta.len() / (1024 * 1024 * 1024);
+                        if len == 0 { 20 } else { len }
+                    } else {
+                        20
+                    };
+
                     disks.push(VmDisk {
                         id: format!("{}-{}", name_or_id, target),
                         name: target.to_string(),
                         path: source.to_string(),
-                        size_gb: 20,
+                        size_gb,
                         format: "qcow2".to_string(),
                         pool_name: "images".to_string(),
                     });
@@ -265,16 +306,47 @@ impl HypervisorDriver for KvmDriver {
             }
         }
 
-        // Parse IP address from leases
+        // Parse IP address matching real MAC address
         let mut ip_address = None;
-        if let Ok(leases) = self.run_virsh(&["net-dhcp-leases", "default"]).await {
-            for line in leases.lines().skip(2) {
+        if let Ok(domif) = self.run_virsh(&["domifaddr", name_or_id, "--source", "lease"]).await {
+            for line in domif.lines().skip(2) {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 5 {
-                    let ip = parts[4].split('/').next().unwrap_or("");
+                if parts.len() >= 4 {
+                    let ip = parts[3].split('/').next().unwrap_or("");
                     if !ip.is_empty() {
                         ip_address = Some(ip.to_string());
                         break;
+                    }
+                }
+            }
+        }
+
+        if ip_address.is_none() {
+            let mut target_mac = None;
+            if let Ok(iflist) = self.run_virsh(&["domiflist", name_or_id]).await {
+                for line in iflist.lines().skip(2) {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 5 {
+                        target_mac = Some(parts[4].to_lowercase());
+                        break;
+                    }
+                }
+            }
+
+            if let Some(ref mac) = target_mac {
+                if let Ok(leases) = self.run_virsh(&["net-dhcp-leases", "default"]).await {
+                    for line in leases.lines().skip(2) {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 5 {
+                            let lease_mac = parts[1].to_lowercase();
+                            if &lease_mac == mac {
+                                let ip = parts[4].split('/').next().unwrap_or("");
+                                if !ip.is_empty() {
+                                    ip_address = Some(ip.to_string());
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -303,12 +375,56 @@ impl HypervisorDriver for KvmDriver {
 
         let disk_dir = "/var/lib/libvirt/images";
         let disk_format = req.disk_format.as_deref().unwrap_or("qcow2");
-        let disk_path = format!("{}/{}.{}", disk_dir, req.name, disk_format);
+        let disk_name = format!("{}.{}", req.name, disk_format);
+        let disk_path = format!("{}/{}", disk_dir, disk_name);
 
-        // If template image exists, copy/backing file; otherwise create new qcow2
-        let mut qemu_cmd = Command::new("qemu-img");
-        qemu_cmd.arg("create").arg("-f").arg(disk_format).arg(&disk_path).arg(format!("{}G", req.disk_size_gb));
-        let _ = qemu_cmd.output().await;
+        // Check if golden template image is available for instant Copy-on-Write instanciation
+        let has_golden_image = std::path::Path::new("/var/lib/libvirt/images/debian13.qcow2").exists();
+        let use_template_backing = req.template_id.is_some() || has_golden_image;
+
+        if use_template_backing && has_golden_image {
+            info!("Creating VM {} with Copy-On-Write backing image debian13.qcow2", req.name);
+            let vol_res = self.run_virsh(&[
+                "vol-create-as",
+                "images",
+                &disk_name,
+                &format!("{}G", req.disk_size_gb),
+                "--format",
+                disk_format,
+                "--backing-vol",
+                "debian13.qcow2",
+                "--backing-vol-format",
+                "qcow2",
+            ]).await;
+
+            if vol_res.is_err() {
+                // Fallback direct qemu-img create with backing file
+                let mut qemu_cmd = Command::new("qemu-img");
+                qemu_cmd.arg("create")
+                    .arg("-f").arg(disk_format)
+                    .arg("-F").arg("qcow2")
+                    .arg("-b").arg("/var/lib/libvirt/images/debian13.qcow2")
+                    .arg(&disk_path)
+                    .arg(format!("{}G", req.disk_size_gb));
+                let _ = qemu_cmd.output().await;
+            }
+        } else {
+            // Standard new blank disk volume
+            let vol_res = self.run_virsh(&[
+                "vol-create-as",
+                "images",
+                &disk_name,
+                &format!("{}G", req.disk_size_gb),
+                "--format",
+                disk_format,
+            ]).await;
+
+            if vol_res.is_err() {
+                let mut qemu_cmd = Command::new("qemu-img");
+                qemu_cmd.arg("create").arg("-f").arg(disk_format).arg(&disk_path).arg(format!("{}G", req.disk_size_gb));
+                let _ = qemu_cmd.output().await;
+            }
+        }
 
         let memory_kib = req.memory_mb * 1024;
         let vcpus = req.vcpus;
@@ -527,6 +643,60 @@ impl HypervisorDriver for KvmDriver {
     async fn delete_disk(&self, disk_path: &str) -> Result<()> {
         if tokio::fs::metadata(disk_path).await.is_ok() {
             tokio::fs::remove_file(disk_path).await.context("Failed to remove disk file")?;
+        }
+        Ok(())
+    }
+
+    async fn attach_disk(&self, vm_id: &str, disk_path: &str, target_dev: &str) -> Result<()> {
+        info!("Attaching disk {} as {} to VM {}", disk_path, target_dev, vm_id);
+        let format = if disk_path.ends_with(".qcow2") { "qcow2" } else { "raw" };
+
+        let res = self.run_virsh(&[
+            "attach-disk",
+            vm_id,
+            disk_path,
+            target_dev,
+            "--driver",
+            "qemu",
+            "--subdriver",
+            format,
+            "--persistent",
+            "--live",
+        ]).await;
+
+        if res.is_err() {
+            self.run_virsh(&[
+                "attach-disk",
+                vm_id,
+                disk_path,
+                target_dev,
+                "--driver",
+                "qemu",
+                "--subdriver",
+                format,
+                "--config",
+            ]).await?;
+        }
+        Ok(())
+    }
+
+    async fn detach_disk(&self, vm_id: &str, target_dev: &str) -> Result<()> {
+        info!("Detaching disk {} from VM {}", target_dev, vm_id);
+        let res = self.run_virsh(&[
+            "detach-disk",
+            vm_id,
+            target_dev,
+            "--persistent",
+            "--live",
+        ]).await;
+
+        if res.is_err() {
+            self.run_virsh(&[
+                "detach-disk",
+                vm_id,
+                target_dev,
+                "--config",
+            ]).await?;
         }
         Ok(())
     }

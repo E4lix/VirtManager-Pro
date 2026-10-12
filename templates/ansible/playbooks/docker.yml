@@ -1,0 +1,50 @@
+---
+- name: Installation et configuration de Docker Engine & Compose
+  hosts: all
+  become: yes
+  tasks:
+    - name: Mise à jour du cache des paquets
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Installation des prérequis Docker (ca-certificates, curl, gnupg)
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - iptables
+        state: present
+
+    - name: Création du répertoire de clés de trousseau apt
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Installation des paquets Docker et conteneurs
+      apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+          - containerd
+        state: present
+
+    - name: Activation et démarrage du service Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Ajout de l'utilisateur debian au groupe docker
+      user:
+        name: debian
+        groups: docker
+        append: yes
+
+    - name: Nettoyage des caches apt
+      apt:
+        autoclean: yes
+        autoremove: yes

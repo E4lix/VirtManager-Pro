@@ -109,6 +109,22 @@ export const api = {
     return res.json();
   },
 
+  async attachDiskToVm(id, diskPath, targetDev) {
+    const res = await fetch(`${API_BASE}/vms/${id}/disks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ disk_path: diskPath, target_dev: targetDev }),
+    });
+    return res.json();
+  },
+
+  async detachDiskFromVm(id, targetDev) {
+    const res = await fetch(`${API_BASE}/vms/${id}/disks/${targetDev}`, {
+      method: 'DELETE',
+    });
+    return res.json();
+  },
+
   // Disks & Storage
   async listDisks() {
     const res = await fetch(`${API_BASE}/disks`);

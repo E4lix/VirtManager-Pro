@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::api::auth::extract_claims;
 use crate::models::{
-    ApiResponse, AssignVmRequest, CloneVmRequest, CreateVmRequest, UserRole,
+    ApiResponse, AssignVmRequest, AttachDiskRequest, CloneVmRequest, CreateVmRequest, UserRole,
     VirtualMachine, VmState,
 };
 use crate::state::AppState;
@@ -104,8 +104,11 @@ pub async fn create_vm(
         match drv.create_vm(&payload).await {
             Ok(mut new_vm) => {
                 new_vm.assigned_to = payload.assigned_to.clone();
-                let mut store = state.store.write().await;
-                store.vms.insert(new_vm.id.clone(), new_vm.clone());
+                {
+                    let mut store = state.store.write().await;
+                    store.vms.insert(new_vm.id.clone(), new_vm.clone());
+                }
+                let _ = state.save_to_disk().await;
 
                 return (
                     StatusCode::CREATED,
@@ -315,6 +318,7 @@ pub async fn delete_vm(
         let mut store = state.store.write().await;
         store.vms.remove(&id);
     }
+    let _ = state.save_to_disk().await;
 
     (
         StatusCode::OK,
@@ -360,8 +364,11 @@ pub async fn clone_vm(
         match drv.clone_vm(&vm_name, &payload.new_name).await {
             Ok(mut cloned_vm) => {
                 cloned_vm.assigned_to = payload.assigned_to.clone();
-                let mut store = state.store.write().await;
-                store.vms.insert(cloned_vm.id.clone(), cloned_vm.clone());
+                {
+                    let mut store = state.store.write().await;
+                    store.vms.insert(cloned_vm.id.clone(), cloned_vm.clone());
+                }
+                let _ = state.save_to_disk().await;
 
                 return (
                     StatusCode::CREATED,
@@ -414,6 +421,8 @@ pub async fn assign_vm(
     if let Some(vm) = store.vms.get_mut(&id) {
         vm.assigned_to = Some(payload.username.clone());
         let updated = vm.clone();
+        drop(store);
+        let _ = state.save_to_disk().await;
 
         return (
             StatusCode::OK,
@@ -480,6 +489,149 @@ pub async fn get_vm_vnc(
                 "ws_path": format!("/api/vnc/ws/{}", id),
                 "novnc_url": format!("/novnc/vnc_lite.html?path=api/vnc/ws/{}", id)
             })),
+        }),
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/vms/{id}/disks",
+    request_body = AttachDiskRequest,
+    responses(
+        (status = 200, description = "Disk attached to VM", body = ApiResponse<bool>),
+        (status = 400, description = "Failed to attach disk")
+    )
+)]
+pub async fn attach_disk_to_vm(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AttachDiskRequest>,
+) -> impl IntoResponse {
+    let (hypervisor_id, vm_name) = {
+        let store = state.store.read().await;
+        if let Some(vm) = store.vms.get(&id) {
+            (vm.hypervisor_id.clone(), vm.name.clone())
+        } else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse {
+                    success: false,
+                    message: "Machine virtuelle introuvable".to_string(),
+                    data: None,
+                }),
+            );
+        }
+    };
+
+    let target_dev = payload.target_dev.unwrap_or_else(|| "vdb".to_string());
+
+    if let Some(drv) = state.get_driver(&hypervisor_id).await {
+        match drv.attach_disk(&vm_name, &payload.disk_path, &target_dev).await {
+            Ok(_) => {
+                // Refresh VM details
+                if let Ok(updated_vm) = drv.get_vm(&vm_name).await {
+                    let mut store = state.store.write().await;
+                    store.vms.insert(id, updated_vm);
+                }
+                let _ = state.save_to_disk().await;
+
+                return (
+                    StatusCode::OK,
+                    Json(ApiResponse {
+                        success: true,
+                        message: format!("Disque '{}' attaché avec succès sur {}", payload.disk_path, target_dev),
+                        data: Some(true),
+                    }),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse {
+                        success: false,
+                        message: format!("Échec de l'attachement du disque: {}", e),
+                        data: None,
+                    }),
+                );
+            }
+        }
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ApiResponse {
+            success: false,
+            message: "Hyperviseur indisponible".to_string(),
+            data: None,
+        }),
+    )
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/vms/{id}/disks/{target}",
+    responses(
+        (status = 200, description = "Disk detached from VM", body = ApiResponse<bool>),
+        (status = 400, description = "Failed to detach disk")
+    )
+)]
+pub async fn detach_disk_from_vm(
+    Path((id, target)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let (hypervisor_id, vm_name) = {
+        let store = state.store.read().await;
+        if let Some(vm) = store.vms.get(&id) {
+            (vm.hypervisor_id.clone(), vm.name.clone())
+        } else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse {
+                    success: false,
+                    message: "Machine virtuelle introuvable".to_string(),
+                    data: None,
+                }),
+            );
+        }
+    };
+
+    if let Some(drv) = state.get_driver(&hypervisor_id).await {
+        match drv.detach_disk(&vm_name, &target).await {
+            Ok(_) => {
+                if let Ok(updated_vm) = drv.get_vm(&vm_name).await {
+                    let mut store = state.store.write().await;
+                    store.vms.insert(id, updated_vm);
+                }
+                let _ = state.save_to_disk().await;
+
+                return (
+                    StatusCode::OK,
+                    Json(ApiResponse {
+                        success: true,
+                        message: format!("Disque {} détaché avec succès de la machine", target),
+                        data: Some(true),
+                    }),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse {
+                        success: false,
+                        message: format!("Échec du détachement du disque: {}", e),
+                        data: None,
+                    }),
+                );
+            }
+        }
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ApiResponse {
+            success: false,
+            message: "Hyperviseur indisponible".to_string(),
+            data: None,
         }),
     )
 }

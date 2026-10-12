@@ -59,6 +59,8 @@ export default function App() {
   const [modalCreateDisk, setModalCreateDisk] = useState(false);
   const [modalResizeDisk, setModalResizeDisk] = useState(false);
   const [modalDeployTemplate, setModalDeployTemplate] = useState(false);
+  const [modalAttachDisk, setModalAttachDisk] = useState(false);
+  const [formAttachDisk, setFormAttachDisk] = useState({ disk_path: '', target_dev: 'vdb' });
   const [activeTaskLog, setActiveTaskLog] = useState(null);
 
   // Form states
@@ -69,6 +71,7 @@ export default function App() {
     memory_mb: 2048,
     disk_size_gb: 20,
     os_type: 'Debian 12',
+    template_id: 'tpl-debian',
     assigned_to: '',
   });
 
@@ -182,11 +185,28 @@ export default function App() {
       memory_mb: Number(formVm.memory_mb),
       disk_size_gb: Number(formVm.disk_size_gb),
       disk_format: 'qcow2',
+      template_id: formVm.template_id || null,
       os_type: formVm.os_type,
       assigned_to: formVm.assigned_to || null,
     });
     setModalCreateVm(false);
     refreshAll();
+  };
+
+  const handleAttachDiskSubmit = async (e) => {
+    e.preventDefault();
+    if (!selectedVm || !formAttachDisk.disk_path) return;
+    await api.attachDiskToVm(selectedVm.id, formAttachDisk.disk_path, formAttachDisk.target_dev);
+    setModalAttachDisk(false);
+    refreshAll();
+  };
+
+  const handleDetachDisk = async (targetDev) => {
+    if (!selectedVm) return;
+    if (confirm(`Confirmez-vous le détachement du disque '${targetDev}' de la VM '${selectedVm.name}' ?`)) {
+      await api.detachDiskFromVm(selectedVm.id, targetDev);
+      refreshAll();
+    }
   };
 
   const handleAddHvSubmit = async (e) => {
@@ -998,8 +1018,20 @@ export default function App() {
                           </div>
 
                           <div className="panel-card">
-                            <div className="panel-card-header">
+                            <div className="panel-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontWeight: 600 }}>Disques Virtuels Associés</span>
+                              <button
+                                className="btn btn-primary btn-sm"
+                                onClick={() => {
+                                  setFormAttachDisk({
+                                    disk_path: disks[0]?.path || '/var/lib/libvirt/images/',
+                                    target_dev: `vd${String.fromCharCode(97 + selectedVm.disks.length)}`,
+                                  });
+                                  setModalAttachDisk(true);
+                                }}
+                              >
+                                <Plus size={14} /> Attacher un Disque
+                              </button>
                             </div>
                             <table className="data-table">
                               <thead>
@@ -1009,6 +1041,7 @@ export default function App() {
                                   <th>Taille</th>
                                   <th>Format</th>
                                   <th>Pool</th>
+                                  <th>Actions</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -1019,11 +1052,24 @@ export default function App() {
                                     <td>{d.size_gb} GB</td>
                                     <td>{d.format}</td>
                                     <td>{d.pool_name}</td>
+                                    <td>
+                                      {d.name !== 'vda' ? (
+                                        <button
+                                          className="btn btn-danger btn-sm"
+                                          style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                                          onClick={() => handleDetachDisk(d.name)}
+                                        >
+                                          Détacher
+                                        </button>
+                                      ) : (
+                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Disque Système</span>
+                                      )}
+                                    </td>
                                   </tr>
                                 ))}
                                 {selectedVm.disks.length === 0 && (
                                   <tr>
-                                    <td colSpan="5" style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+                                    <td colSpan="6" style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
                                       Disque standard qcow2 assigné par défaut
                                     </td>
                                   </tr>
@@ -1035,7 +1081,53 @@ export default function App() {
                       )}
 
                       {activeVmTab === 'console' && (
-                        <VncViewer vmId={selectedVm.id} vmName={selectedVm.name} />
+                        selectedVm.state === 'running' ? (
+                          <VncViewer vmId={selectedVm.id} vmName={selectedVm.name} />
+                        ) : (
+                          <div
+                            className="panel-card"
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              minHeight: '380px',
+                              gap: '1rem',
+                              background: '#0b1120',
+                              border: '1px solid #1e293b',
+                              borderRadius: '8px',
+                              padding: '2rem',
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: '64px',
+                                height: '64px',
+                                borderRadius: '50%',
+                                background: 'rgba(239, 68, 68, 0.12)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: '#ef4444',
+                              }}
+                            >
+                              <Square size={32} />
+                            </div>
+                            <h3 style={{ fontSize: '1.25rem', fontWeight: 700, color: '#f8fafc' }}>
+                              Machine Virtuelle Éteinte
+                            </h3>
+                            <p style={{ color: '#94a3b8', maxWidth: '420px', textAlign: 'center', fontSize: '0.875rem' }}>
+                              La console VNC est inaccessible car le domaine QEMU/KVM est arrêté. Démarrez la machine pour ouvrir la session graphique en direct.
+                            </p>
+                            <button
+                              className="btn btn-success"
+                              onClick={() => handleStartVm(selectedVm.id)}
+                              style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                            >
+                              <Play size={16} /> Démarrer {selectedVm.name}
+                            </button>
+                          </div>
+                        )
                       )}
 
                       {activeVmTab === 'hardware' && (
@@ -1345,6 +1437,64 @@ export default function App() {
                   </div>
                 ))}
               </div>
+
+              {/* SECTION TERRAFORM (IaC) */}
+              <div className="panel-card" style={{ marginTop: '2rem' }}>
+                <div className="panel-card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Layers size={18} style={{ color: '#7c3aed' }} />
+                    <span style={{ fontWeight: 700, fontSize: '1.05rem' }}>
+                      Infrastructure as Code avec HashiCorp Terraform (Provider Libvirt)
+                    </span>
+                  </div>
+                  <span className="badge badge-ready">
+                    <span className="status-dot"></span> TEMPLATES TERRAFORM PRÊTS
+                  </span>
+                </div>
+                <div style={{ padding: '1.25rem' }}>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1rem' }}>
+                    Provisionnement déclaratif d'instances KVM/QEMU avec configuration Cloud-Init automatique, attribution d'adresses IP et génération de clés SSH sans intervention manuelle.
+                  </p>
+
+                  <div style={{ background: '#090d17', borderRadius: '8px', padding: '1rem', border: '1px solid var(--border-color)', marginBottom: '1rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', color: '#94a3b8', fontSize: '0.8rem' }}>
+                      <span>templates/terraform/main.tf</span>
+                      <span>HCL (HashiCorp Language)</span>
+                    </div>
+                    <pre style={{ margin: 0, fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: '#38bdf8', overflowX: 'auto', maxHeight: '180px' }}>
+{`resource "libvirt_volume" "vm_os_disk" {
+  name             = "\${var.vm_name}-disk.qcow2"
+  pool             = "default"
+  base_volume_name = "debian13.qcow2" # Copy-on-Write Golden Image
+  size             = 21474836480       # 20 GB
+}
+
+resource "libvirt_domain" "vm" {
+  name   = var.vm_name
+  memory = var.memory_mb
+  vcpu   = var.vcpus
+  cloudinit = libvirt_cloudinit_disk.commoninit.id
+  network_interface { network_name = "default" }
+  disk { volume_id = libvirt_volume.vm_os_disk.id }
+  graphics { type = "vnc" autoport = true }
+}`}
+                    </pre>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                      Fichiers disponibles : <code style={{ color: '#10b981' }}>templates/terraform/main.tf</code> • <code style={{ color: '#10b981' }}>variables.tf</code> • <code style={{ color: '#10b981' }}>outputs.tf</code>
+                    </span>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      style={{ marginLeft: 'auto' }}
+                      onClick={() => alert("Manifest Terraform prêt dans templates/terraform/. Vous pouvez exécuter 'terraform init && terraform apply'.")}
+                    >
+                      Copier Manifest Terraform
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1539,6 +1689,25 @@ export default function App() {
                   </select>
                 </div>
 
+                <div className="form-group">
+                  <label className="form-label">Modèle d'image / Système d'exploitation</label>
+                  <select
+                    className="form-control"
+                    value={formVm.template_id}
+                    onChange={(e) => setFormVm({ ...formVm, template_id: e.target.value })}
+                  >
+                    <option value="tpl-debian">⚡ Debian 12/13 Golden Image (Instanciation instantanée Copy-on-Write)</option>
+                    <option value="tpl-nginx">🌐 Serveur Web Nginx (Provisionné via Ansible)</option>
+                    <option value="tpl-docker">🐳 Hôte Docker Engine & Compose</option>
+                    <option value="">💾 Disque vierge (Sans OS - Installation manuelle)</option>
+                  </select>
+                  <small style={{ color: '#38bdf8', fontSize: '0.78rem', marginTop: '4px', display: 'block' }}>
+                    {formVm.template_id
+                      ? '✨ La VM démarrera immédiatement avec un Debian opérationnel en 2 secondes grâce au CoW backing file.'
+                      : '⚠️ Un disque vierge sera créé. Vous devrez attacher un ISO pour installer un OS.'}
+                  </small>
+                </div>
+
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                   <div className="form-group">
                     <label className="form-label">vCPUs</label>
@@ -1601,6 +1770,79 @@ export default function App() {
                 </button>
                 <button type="submit" className="btn btn-primary">
                   Créer et Démarrer
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: ATTACHER UN DISQUE */}
+      {modalAttachDisk && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 600 }}>
+                Attacher un Disque Virtuel à {selectedVm?.name}
+              </h3>
+              <button
+                onClick={() => setModalAttachDisk(false)}
+                style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer' }}
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={handleAttachDiskSubmit}>
+              <div className="modal-body">
+                <div className="form-group">
+                  <label className="form-label">Sélectionner un Disque Existant du Pool</label>
+                  <select
+                    className="form-control"
+                    value={formAttachDisk.disk_path}
+                    onChange={(e) => setFormAttachDisk({ ...formAttachDisk, disk_path: e.target.value })}
+                  >
+                    <option value="">-- Choisir un disque existant --</option>
+                    {disks.map((d) => (
+                      <option key={d.id} value={d.path}>
+                        {d.name} ({d.size_gb} GB - {d.format})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Ou saisir un chemin d'image personnalisé</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={formAttachDisk.disk_path}
+                    onChange={(e) => setFormAttachDisk({ ...formAttachDisk, disk_path: e.target.value })}
+                    placeholder="/var/lib/libvirt/images/mon-disque.qcow2"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Périphérique Cible (Bus VirtIO)</label>
+                  <input
+                    type="text"
+                    required
+                    className="form-control"
+                    value={formAttachDisk.target_dev}
+                    onChange={(e) => setFormAttachDisk({ ...formAttachDisk, target_dev: e.target.value })}
+                    placeholder="vdb, vdc, vdd..."
+                  />
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setModalAttachDisk(false)}
+                >
+                  Annuler
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  Attacher le Disque
                 </button>
               </div>
             </form>

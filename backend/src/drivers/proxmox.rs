@@ -225,4 +225,13 @@ impl HypervisorDriver for ProxmoxDriver {
     async fn delete_disk(&self, _disk_path: &str) -> Result<()> {
         Ok(())
     }
+
+    async fn attach_disk(&self, _vm_id: &str, _disk_path: &str, _target_dev: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn detach_disk(&self, _vm_id: &str, _target_dev: &str) -> Result<()> {
+        Ok(())
+    }
 }
+

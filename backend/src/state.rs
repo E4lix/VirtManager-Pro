@@ -42,10 +42,38 @@ impl AppState {
             db_path,
         };
 
-        state.init_defaults().await;
+        let loaded = state.load_from_disk().await.unwrap_or(false);
+        if !loaded {
+            state.init_defaults().await;
+        }
         state.sync_with_kvm().await;
+        let _ = state.save_to_disk().await;
 
         state
+    }
+
+    pub async fn save_to_disk(&self) -> Result<()> {
+        if let Some(parent) = self.db_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        let store = self.store.read().await;
+        let json = serde_json::to_string_pretty(&*store)?;
+        tokio::fs::write(&self.db_path, json).await?;
+        Ok(())
+    }
+
+    pub async fn load_from_disk(&self) -> Result<bool> {
+        if self.db_path.exists() {
+            if let Ok(content) = tokio::fs::read_to_string(&self.db_path).await {
+                if let Ok(loaded_store) = serde_json::from_str::<DataStore>(&content) {
+                    let mut store = self.store.write().await;
+                    *store = loaded_store;
+                    info!("Loaded data store from {:?}", self.db_path);
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     pub async fn get_driver(&self, hypervisor_id: &str) -> Option<Arc<dyn HypervisorDriver>> {
@@ -237,8 +265,11 @@ impl AppState {
         if let Ok(vms) = local_driver.list_vms().await {
             let mut store = self.store.write().await;
             for mut vm in vms {
-                // If it's debian13-clone, assign to user1 as example
-                if vm.name == "debian13-clone" {
+                if let Some(existing) = store.vms.get(&vm.id) {
+                    if existing.assigned_to.is_some() {
+                        vm.assigned_to = existing.assigned_to.clone();
+                    }
+                } else if vm.name == "debian13-clone" {
                     vm.assigned_to = Some("user1".to_string());
                 }
                 store.vms.insert(vm.id.clone(), vm);

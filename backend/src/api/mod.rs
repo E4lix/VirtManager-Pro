@@ -34,6 +34,8 @@ use crate::vnc::vnc_ws_handler;
         vms::clone_vm,
         vms::assign_vm,
         vms::get_vm_vnc,
+        vms::attach_disk_to_vm,
+        vms::detach_disk_from_vm,
         disks::list_disks,
         disks::create_disk,
         disks::resize_disk,
@@ -63,6 +65,7 @@ use crate::vnc::vnc_ws_handler;
             CreateVmRequest,
             CloneVmRequest,
             AssignVmRequest,
+            AttachDiskRequest,
             StoragePool,
             CreateDiskRequest,
             ResizeDiskRequest,
@@ -112,6 +115,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/vms/:id/clone", post(vms::clone_vm))
         .route("/vms/:id/assign", post(vms::assign_vm))
         .route("/vms/:id/vnc", get(vms::get_vm_vnc))
+        .route("/vms/:id/disks", post(vms::attach_disk_to_vm))
+        .route("/vms/:id/disks/:target", delete(vms::detach_disk_from_vm))
         // Storage & Disks
         .route("/disks", get(disks::list_disks))
         .route("/disks", post(disks::create_disk))

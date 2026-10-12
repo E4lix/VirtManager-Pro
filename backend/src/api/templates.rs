@@ -132,13 +132,38 @@ pub async fn trigger_template_build(
     tokio::spawn(async move {
         info!("Starting async Packer/Ansible build task {}", task_id_clone);
 
-        // Run packer validate first
+        let resolved_packer = if std::path::Path::new(&packer_path).exists() {
+            packer_path.clone()
+        } else if std::path::Path::new(&format!("../{}", packer_path)).exists() {
+            format!("../{}", packer_path)
+        } else {
+            packer_path.clone()
+        };
+
+        let resolved_ansible = if std::path::Path::new(&ansible_path).exists() {
+            ansible_path.clone()
+        } else if std::path::Path::new(&format!("../{}", ansible_path)).exists() {
+            format!("../{}", ansible_path)
+        } else {
+            ansible_path.clone()
+        };
+
+        // Run packer validate in template's folder so relative paths resolve cleanly
         let mut cmd = Command::new("packer");
-        cmd.arg("validate").arg(&packer_path);
+        if let Some(parent) = std::path::Path::new(&resolved_packer).parent() {
+            cmd.current_dir(parent);
+            if let Some(file_name) = std::path::Path::new(&resolved_packer).file_name() {
+                cmd.arg("validate").arg(file_name);
+            } else {
+                cmd.arg("validate").arg(&resolved_packer);
+            }
+        } else {
+            cmd.arg("validate").arg(&resolved_packer);
+        }
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let mut lines = Vec::new();
-        lines.push(format!("[EXEC] Validation de la syntaxe Packer ({})", packer_path));
+        lines.push(format!("[EXEC] Validation de la syntaxe Packer ({})", resolved_packer));
 
         if let Ok(output) = cmd.output().await {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -152,9 +177,9 @@ pub async fn trigger_template_build(
         }
 
         // Run ansible-playbook syntax-check
-        lines.push(format!("[EXEC] Vérification de la syntaxe Ansible ({})", ansible_path));
+        lines.push(format!("[EXEC] Vérification de la syntaxe Ansible ({})", resolved_ansible));
         let mut ans_cmd = Command::new("ansible-playbook");
-        ans_cmd.arg("--syntax-check").arg(&ansible_path);
+        ans_cmd.arg("--syntax-check").arg(&resolved_ansible);
         ans_cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         if let Ok(output) = ans_cmd.output().await {
@@ -246,8 +271,11 @@ pub async fn deploy_template(
         match drv.create_vm(&vm_req).await {
             Ok(mut new_vm) => {
                 new_vm.assigned_to = payload.assigned_to;
-                let mut store = state.store.write().await;
-                store.vms.insert(new_vm.id.clone(), new_vm);
+                {
+                    let mut store = state.store.write().await;
+                    store.vms.insert(new_vm.id.clone(), new_vm);
+                }
+                let _ = state.save_to_disk().await;
 
                 let task = BackgroundTask {
                     id: format!("deploy-{}", uuid::Uuid::new_v4().simple()),

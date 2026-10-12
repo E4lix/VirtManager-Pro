@@ -4,6 +4,10 @@ packer {
       version = ">= 1.0.10"
       source  = "github.com/hashicorp/qemu"
     }
+    ansible = {
+      version = ">= 1.1.2"
+      source  = "github.com/hashicorp/ansible"
+    }
   }
 }
 
@@ -30,7 +34,7 @@ variable "disk_size" {
 source "qemu" "debian" {
   vm_name          = "${var.vm_name}.qcow2"
   iso_url          = "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.7.0-amd64-netinst.iso"
-  iso_checksum     = "file:https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/SHA512SUMS"
+  iso_checksum     = "none"
   output_directory = "output-debian"
   shutdown_command = "echo 'packer' | sudo -S shutdown -P now"
   disk_size        = var.disk_size

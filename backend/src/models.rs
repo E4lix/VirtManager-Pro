@@ -241,8 +241,15 @@ pub struct BackgroundTask {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AttachDiskRequest {
+    pub disk_path: String,
+    pub target_dev: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiResponse<T> {
     pub success: bool,
     pub message: String,
     pub data: Option<T>,
 }
+

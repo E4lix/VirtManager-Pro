@@ -61,4 +61,11 @@ pub trait HypervisorDriver: Send + Sync {
 
     /// Delete a disk image
     async fn delete_disk(&self, disk_path: &str) -> Result<()>;
+
+    /// Attach a disk to a VM
+    async fn attach_disk(&self, vm_id: &str, disk_path: &str, target_dev: &str) -> Result<()>;
+
+    /// Detach a disk from a VM
+    async fn detach_disk(&self, vm_id: &str, target_dev: &str) -> Result<()>;
 }
+
