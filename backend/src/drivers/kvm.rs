@@ -41,6 +41,40 @@ impl KvmDriver {
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
+
+    pub async fn ensure_vnc_graphics(&self, vm_id: &str) -> Result<()> {
+        let xml = match self.run_virsh(&["dumpxml", vm_id]).await {
+            Ok(x) => x,
+            Err(_) => return Ok(()),
+        };
+
+        let mut needs_update = false;
+        let mut new_xml = xml.clone();
+
+        if !new_xml.contains("<graphics type='vnc'") {
+            if let Some(pos) = new_xml.rfind("</devices>") {
+                let vnc_snippet = "    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0' sharePolicy='ignore'>\n      <listen type='address' address='0.0.0.0'/>\n    </graphics>\n";
+                new_xml.insert_str(pos, vnc_snippet);
+                needs_update = true;
+            }
+        } else if !new_xml.contains("sharePolicy='ignore'") {
+            new_xml = new_xml.replace(
+                "<graphics type='vnc'",
+                "<graphics type='vnc' sharePolicy='ignore'",
+            );
+            needs_update = true;
+        }
+
+        if needs_update {
+            let temp_file = format!("/tmp/vnc-patch-{}.xml", vm_id);
+            if tokio::fs::write(&temp_file, &new_xml).await.is_ok() {
+                let _ = self.run_virsh(&["define", &temp_file]).await;
+                let _ = tokio::fs::remove_file(&temp_file).await;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -306,11 +340,11 @@ impl HypervisorDriver for KvmDriver {
       <source network='default'/>
       <model type='virtio'/>
     </interface>
-    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
+    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0' sharePolicy='ignore'>
       <listen type='address' address='0.0.0.0'/>
     </graphics>
     <video>
-      <model type='cirrus' vram='16384' heads='1'/>
+      <model type='vga' vram='16384' heads='1'/>
     </video>
   </devices>
 </domain>"#, req.name, memory_kib, memory_kib, vcpus, disk_format, disk_path);
@@ -331,6 +365,7 @@ impl HypervisorDriver for KvmDriver {
 
     async fn start_vm(&self, vm_id: &str) -> Result<()> {
         info!("Starting VM {}", vm_id);
+        let _ = self.ensure_vnc_graphics(vm_id).await;
         self.run_virsh(&["start", vm_id]).await?;
         Ok(())
     }
@@ -373,10 +408,13 @@ impl HypervisorDriver for KvmDriver {
             anyhow::bail!("virt-clone failed: {}", err.trim());
         }
 
+        let _ = self.ensure_vnc_graphics(new_name).await;
         self.get_vm(new_name).await
     }
 
+
     async fn get_vnc_info(&self, vm_id: &str) -> Result<VncInfo> {
+        let _ = self.ensure_vnc_graphics(vm_id).await;
         let mut port = 5900;
         if let Ok(out) = self.run_virsh(&["vncdisplay", vm_id]).await {
             let s = out.trim();
