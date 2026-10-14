@@ -74,7 +74,27 @@ impl ProxmoxDriver {
 
     fn auth_header(&self) -> Option<String> {
         match (&self.token_id, &self.token_secret) {
-            (Some(id), Some(secret)) => Some(format!("PVEAPIToken={}={}", id, secret)),
+            (Some(id), Some(secret)) if !id.trim().is_empty() && !secret.trim().is_empty() => {
+                let clean_id = id.trim();
+                let clean_secret = secret.trim();
+
+                let full_token_id = if clean_id.contains('!') {
+                    if !clean_id.contains('@') {
+                        let parts: Vec<&str> = clean_id.splitn(2, '!').collect();
+                        format!("{}@pam!{}", parts[0], parts[1])
+                    } else {
+                        clean_id.to_string()
+                    }
+                } else if clean_id.contains('@') {
+                    format!("{}!virmox", clean_id)
+                } else if clean_id.eq_ignore_ascii_case("root") || clean_id.eq_ignore_ascii_case("admin") {
+                    format!("{}@pam!virmox", clean_id)
+                } else {
+                    format!("root@pam!{}", clean_id)
+                };
+
+                Some(format!("PVEAPIToken={}={}", full_token_id, clean_secret))
+            }
             _ => None,
         }
     }

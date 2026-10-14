@@ -23,7 +23,12 @@ if [ ! -d "frontend/dist" ]; then
   cd "$DIR"
 fi
 
-# 2. Compiler et démarrer le backend Rust
+# 2. Libérer le port 8080 si une ancienne instance est en cours d'exécution
+fuser -k 8080/tcp 2>/dev/null || true
+pkill -f virtmanager-backend 2>/dev/null || true
+sleep 1
+
+# 3. Compiler et démarrer le backend Rust
 echo "⚙️  Démarrage du backend Rust Axum sur le port 8080..."
 cd backend
 cargo build
