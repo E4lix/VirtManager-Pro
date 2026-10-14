@@ -24,13 +24,15 @@ pub async fn list_vms(
 ) -> impl IntoResponse {
     let claims = extract_claims(&headers, &state);
 
-    // If Proxmox is registered but no Proxmox VMs are in cache yet, trigger an immediate sync
-    let has_pve_vms = {
+    // If any registered hypervisor has no VMs in cache yet, trigger an immediate sync
+    let needs_sync = {
         let store = state.store.read().await;
-        store.vms.values().any(|vm| vm.hypervisor_id == "remote-pve-cluster")
+        store.hypervisors.keys().any(|hv_id| {
+            !store.vms.values().any(|vm| &vm.hypervisor_id == hv_id)
+        })
     };
-    if !has_pve_vms {
-        state.sync_with_kvm().await;
+    if needs_sync {
+        state.sync_all_hypervisors().await;
     }
 
     let store = state.store.read().await;

@@ -20,21 +20,7 @@ pub struct ProxmoxDriver {
 
 impl ProxmoxDriver {
     pub fn new(id: String, name: String, endpoint: String) -> Self {
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
-        Self {
-            hypervisor_id: id,
-            hypervisor_name: name,
-            endpoint,
-            node_name: "pve".to_string(),
-            token_id: Some("root@pam!virmox".to_string()),
-            token_secret: Some("8b02885c-0671-41c5-b0d4-b85dd45f9838".to_string()),
-            client,
-        }
+        Self::with_auth(id, name, endpoint, "pve".to_string(), None, None)
     }
 
     pub fn with_auth(
@@ -51,21 +37,34 @@ impl ProxmoxDriver {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
+        let resolved_token_id = token_id
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| std::env::var("PVE_TOKEN_ID").ok())
+            .or_else(|| Some("root@pam!virmox".to_string()));
+
+        let resolved_token_secret = token_secret
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| std::env::var("PVE_TOKEN_SECRET").ok())
+            .or_else(|| Some("8b02885c-0671-41c5-b0d4-b85dd45f9838".to_string()));
+
         Self {
             hypervisor_id: id,
             hypervisor_name: name,
             endpoint,
-            node_name,
-            token_id,
-            token_secret,
+            node_name: if node_name.trim().is_empty() { "pve".to_string() } else { node_name },
+            token_id: resolved_token_id,
+            token_secret: resolved_token_secret,
             client,
         }
     }
 
     fn api_url(&self, path: &str) -> String {
-        let base = self.endpoint.trim_end_matches('/');
+        let mut base = self.endpoint.trim().trim_end_matches('/').to_string();
+        if !base.starts_with("http://") && !base.starts_with("https://") {
+            base = format!("https://{}", base);
+        }
         let base = if base.ends_with("/api2/json") {
-            base.to_string()
+            base
         } else {
             format!("{}/api2/json", base)
         };
@@ -86,7 +85,13 @@ impl ProxmoxDriver {
                 return h.to_string();
             }
         }
-        "192.168.122.62".to_string()
+        let clean = self.endpoint.trim_start_matches("https://").trim_start_matches("http://");
+        let host_part = clean.split('/').next().unwrap_or(clean);
+        let host_only = host_part.split(':').next().unwrap_or(host_part);
+        if !host_only.is_empty() {
+            return host_only.to_string();
+        }
+        "127.0.0.1".to_string()
     }
 
     async fn list_pve_vms_raw(&self) -> Result<Vec<serde_json::Value>> {

@@ -84,6 +84,12 @@ pub struct Hypervisor {
     pub is_local: bool,
     pub stats: HypervisorStats,
     pub created_at: String,
+    #[serde(default)]
+    pub node_name: Option<String>,
+    #[serde(default)]
+    pub token_id: Option<String>,
+    #[serde(default)]
+    pub token_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -92,6 +98,12 @@ pub struct CreateHypervisorRequest {
     pub hypervisor_type: HypervisorType,
     pub endpoint: String,
     pub is_local: bool,
+    #[serde(default)]
+    pub node_name: Option<String>,
+    #[serde(default)]
+    pub token_id: Option<String>,
+    #[serde(default)]
+    pub token_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]

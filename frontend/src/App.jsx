@@ -80,6 +80,9 @@ export default function App() {
     hypervisor_type: 'kvm',
     endpoint: 'qemu:///system',
     is_local: true,
+    node_name: 'pve',
+    token_id: '',
+    token_secret: '',
   });
 
   const [formClone, setFormClone] = useState({ new_name: '', assigned_to: '' });
@@ -211,9 +214,31 @@ export default function App() {
 
   const handleAddHvSubmit = async (e) => {
     e.preventDefault();
-    await api.createHypervisor(formHv, currentUser.token);
-    setModalAddHv(false);
-    refreshAll();
+    const payload = {
+      name: formHv.name,
+      hypervisor_type: formHv.hypervisor_type,
+      endpoint: formHv.endpoint,
+      is_local: formHv.hypervisor_type === 'kvm' && formHv.endpoint.includes('qemu:///system'),
+      node_name: formHv.node_name || 'pve',
+      token_id: formHv.token_id || undefined,
+      token_secret: formHv.token_secret || undefined,
+    };
+    const res = await api.createHypervisor(payload, currentUser.token);
+    if (res?.success) {
+      setModalAddHv(false);
+      setFormHv({
+        name: '',
+        hypervisor_type: 'kvm',
+        endpoint: 'qemu:///system',
+        is_local: true,
+        node_name: 'pve',
+        token_id: '',
+        token_secret: '',
+      });
+      refreshAll();
+    } else {
+      alert(res?.message || "Erreur lors de l'enregistrement de l'hyperviseur");
+    }
   };
 
   const handleDeleteHv = async (id) => {
@@ -1882,25 +1907,94 @@ resource "libvirt_domain" "vm" {
                   <select
                     className="form-control"
                     value={formHv.hypervisor_type}
-                    onChange={(e) => setFormHv({ ...formHv, hypervisor_type: e.target.value })}
+                    onChange={(e) => {
+                      const type = e.target.value;
+                      let endpoint = formHv.endpoint;
+                      let is_local = false;
+                      if (type === 'kvm') {
+                        endpoint = 'qemu:///system';
+                        is_local = true;
+                      } else if (type === 'proxmox') {
+                        endpoint = 'https://192.168.122.62:8006/api2/json';
+                        is_local = false;
+                      } else if (type === 'remote_kvm') {
+                        endpoint = 'qemu+ssh://root@192.168.1.100/system';
+                        is_local = false;
+                      }
+                      setFormHv({
+                        ...formHv,
+                        hypervisor_type: type,
+                        endpoint,
+                        is_local,
+                      });
+                    }}
                   >
-                    <option value="kvm">KVM / Libvirt (Local ou SSH)</option>
-                    <option value="proxmox">Proxmox VE (REST API)</option>
-                    <option value="remote_kvm">KVM Distant Dédié</option>
+                    <option value="kvm">KVM / Libvirt Local (qemu:///system)</option>
+                    <option value="proxmox">Proxmox VE (API REST HTTP/HTTPS)</option>
+                    <option value="remote_kvm">KVM Distant par SSH (qemu+ssh://...)</option>
                   </select>
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">URI de Connexion (Endpoint)</label>
+                  <label className="form-label">
+                    {formHv.hypervisor_type === 'proxmox'
+                      ? "URL de l'API Proxmox VE (Endpoint)"
+                      : "URI de Connexion Libvirt (Endpoint)"}
+                  </label>
                   <input
                     type="text"
                     required
                     className="form-control"
                     value={formHv.endpoint}
                     onChange={(e) => setFormHv({ ...formHv, endpoint: e.target.value })}
-                    placeholder="qemu:///system ou qemu+ssh://root@192.168.1.100/system"
+                    placeholder={
+                      formHv.hypervisor_type === 'proxmox'
+                        ? 'ex: https://192.168.1.50:8006/api2/json ou https://pve.local:8006'
+                        : 'ex: qemu:///system ou qemu+ssh://root@192.168.1.100/system'
+                    }
                   />
                 </div>
+
+                {formHv.hypervisor_type === 'proxmox' && (
+                  <>
+                    <div className="form-group">
+                      <label className="form-label">Nom du Nœud Proxmox (Node Name)</label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        value={formHv.node_name}
+                        onChange={(e) => setFormHv({ ...formHv, node_name: e.target.value })}
+                        placeholder="ex: pve, node01 (défaut: pve)"
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label className="form-label">API Token ID (Optionnel)</label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        value={formHv.token_id}
+                        onChange={(e) => setFormHv({ ...formHv, token_id: e.target.value })}
+                        placeholder="ex: root@pam!virmox"
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label className="form-label">API Token Secret (Optionnel)</label>
+                      <input
+                        type="password"
+                        className="form-control"
+                        value={formHv.token_secret}
+                        onChange={(e) => setFormHv({ ...formHv, token_secret: e.target.value })}
+                        placeholder="ex: 8b02885c-0671-41c5-b0d4-b85dd45f9838"
+                      />
+                    </div>
+
+                    <div style={{ fontSize: '0.78rem', color: '#94a3b8', background: 'rgba(255,255,255,0.03)', padding: '0.6rem 0.8rem', borderRadius: '4px', marginBottom: '1rem' }}>
+                      💡 <strong>Astuce</strong> : Vous pouvez connecter n'importe quel serveur Proxmox local ou distant sur son port 8006. Si les champs de token sont laissés vides, la plateforme utilisera le token par défaut de l'environnement de virtualisation.
+                    </div>
+                  </>
+                )}
               </div>
               <div className="modal-footer">
                 <button

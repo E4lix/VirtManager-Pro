@@ -118,16 +118,19 @@ pub async fn create_hypervisor(
         endpoint: payload.endpoint,
         status: HypervisorStatus::Online,
         is_local: payload.is_local,
+        node_name: payload.node_name,
+        token_id: payload.token_id,
+        token_secret: payload.token_secret,
         stats: HypervisorStats {
             cpu_cores: 8,
-            cpu_usage_pct: 10.0,
-            memory_total_mb: 16384,
-            memory_used_mb: 4096,
-            disk_total_gb: 500,
-            disk_used_gb: 80,
+            cpu_usage_pct: 0.0,
+            memory_total_mb: 8192,
+            memory_used_mb: 0,
+            disk_total_gb: 100,
+            disk_used_gb: 0,
             active_vms: 0,
             total_vms: 0,
-            uptime_seconds: 3600,
+            uptime_seconds: 0,
         },
         created_at: chrono::Utc::now().to_rfc3339(),
     };
@@ -137,9 +140,9 @@ pub async fn create_hypervisor(
 
     // Ping test
     let is_online = if let Some(driver) = state.get_driver(&id).await {
-        driver.ping().await.unwrap_or(true)
+        driver.ping().await.unwrap_or(false)
     } else {
-        true
+        false
     };
 
     let mut final_hv = new_hv.clone();
@@ -151,8 +154,16 @@ pub async fn create_hypervisor(
 
     {
         let mut store = state.store.write().await;
-        store.hypervisors.insert(id, final_hv.clone());
+        store.hypervisors.insert(id.clone(), final_hv.clone());
     }
+    let _ = state.save_to_disk().await;
+
+    // Trigger sync in background so HTTP response is immediate
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        state_clone.sync_all_hypervisors().await;
+        let _ = state_clone.save_to_disk().await;
+    });
 
     (
         StatusCode::CREATED,
@@ -212,6 +223,13 @@ pub async fn delete_hypervisor(
     if store.hypervisors.remove(&id).is_some() {
         let mut drivers = state.drivers.write().await;
         drivers.remove(&id);
+        drop(drivers);
+
+        // Remove VMs belonging to this hypervisor
+        store.vms.retain(|_, vm| vm.hypervisor_id != id);
+        drop(store);
+
+        let _ = state.save_to_disk().await;
 
         return (
             StatusCode::OK,
