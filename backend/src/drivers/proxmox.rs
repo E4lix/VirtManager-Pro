@@ -511,29 +511,7 @@ impl HypervisorDriver for ProxmoxDriver {
 
     async fn get_vnc_info(&self, vm_id: &str) -> Result<VncInfo> {
         let vmid = self.resolve_vmid(vm_id).await.unwrap_or(100);
-        let url = self.api_url(&format!("nodes/{}/qemu/{}/vncproxy", self.node_name, vmid));
-        let mut req = self.client.post(&url);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-
-        let port = if let Ok(resp) = req.send().await {
-            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                body.get("data")
-                    .and_then(|d| d.get("port"))
-                    .and_then(|p| {
-                        p.as_str()
-                            .and_then(|s| s.parse::<u16>().ok())
-                            .or_else(|| p.as_u64().map(|v| v as u16))
-                    })
-                    .unwrap_or(5900)
-            } else {
-                5900
-            }
-        } else {
-            5900
-        };
-
+        let port = 5900 + (vmid as u16 % 100);
         let host = self.host();
         Ok(VncInfo {
             host,
