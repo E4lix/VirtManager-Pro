@@ -8,12 +8,58 @@ Ce document détaille les méthodes d'installation et de déploiement de **VirtM
 
 - **Système d'exploitation** : Debian 12/13 ou Ubuntu 22.04/24.04 LTS
 - **Virtualisation matérielle** : Intel VT-x ou AMD-V activé (`kvm-ok` ou `/dev/kvm` accessible)
-- **Outils installés** :
-  - `qemu-system-x86_64`, `qemu-utils`
-  - `libvirt-daemon-system`, `libvirt-clients`
-  - `rustc` / `cargo` (ou utilisation de Docker)
-  - `nodejs` / `npm` (v20+)
-  - `novnc`, `websockify`
+- **Installation des outils (Debian / Ubuntu)** :
+
+  Mettez à jour les paquets et installez QEMU, libvirt, noVNC ainsi que les outils de compilation requis par le backend Rust :
+
+  ```bash
+  sudo apt update
+  sudo apt install -y \
+    qemu-system-x86 qemu-utils \
+    libvirt-daemon-system libvirt-clients \
+    novnc websockify \
+    cpu-checker \
+    build-essential pkg-config libssl-dev \
+    curl ca-certificates
+  ```
+
+  Activez libvirt et ajoutez votre compte aux groupes permettant d'utiliser libvirt et KVM :
+
+  ```bash
+  sudo systemctl enable --now libvirtd
+  sudo usermod -aG libvirt,kvm "$USER"
+  ```
+
+  Déconnectez-vous puis reconnectez-vous pour que les nouveaux groupes soient pris en compte.
+
+  Installez Node.js 22 (version LTS, compatible avec la version minimale requise de Node.js 20) :
+
+  ```bash
+  curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh
+  sudo -E bash /tmp/nodesource_setup.sh
+  sudo apt install -y nodejs
+  ```
+
+  Installez Rust stable avec rustup afin d'avoir une version récente de `rustc` et `cargo` :
+
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  . "$HOME/.cargo/env"
+  ```
+
+  Vérifiez les installations et l'accès à la virtualisation :
+
+  ```bash
+  node --version
+  npm --version
+  rustc --version
+  cargo --version
+  virsh --version
+  qemu-system-x86_64 --version
+  kvm-ok
+  ```
+
+  Si vous déployez avec Docker, l'installation de Rust et Node.js sur l'hôte n'est pas nécessaire : ils sont utilisés lors de la construction de l'image. QEMU et libvirt restent requis sur l'hôte pour gérer les VM locales.
 
 ---
 
