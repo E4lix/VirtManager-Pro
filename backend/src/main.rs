@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
 
     let db_path = PathBuf::from("data/database.json");
     let state = Arc::new(AppState::new(db_path).await);
+    state.start_periodic_sync();
 
     // Setup CORS for Frontend React
     let cors = CorsLayer::new()

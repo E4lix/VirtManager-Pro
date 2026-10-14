@@ -1,6 +1,6 @@
 use anyhow::Result;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -295,7 +295,12 @@ impl AppState {
 
         // 1. Query real VMs from libvirt
         if let Ok(vms) = local_driver.list_vms().await {
+            let active_kvm_ids: HashSet<String> = vms.iter().map(|v| v.id.clone()).collect();
             let mut store = self.store.write().await;
+            if let Some(hv) = store.hypervisors.get_mut("local-kvm") {
+                hv.status = HypervisorStatus::Online;
+            }
+            store.vms.retain(|id, vm| vm.hypervisor_id != "local-kvm" || active_kvm_ids.contains(id));
             for mut vm in vms {
                 if let Some(existing) = store.vms.get(&vm.id) {
                     if existing.assigned_to.is_some() {
@@ -312,7 +317,12 @@ impl AppState {
         // 2. Query real VMs from Proxmox VE
         match pve_driver.list_vms().await {
             Ok(pve_vms) => {
+                let active_pve_ids: HashSet<String> = pve_vms.iter().map(|v| v.id.clone()).collect();
                 let mut store = self.store.write().await;
+                if let Some(hv) = store.hypervisors.get_mut("remote-pve-cluster") {
+                    hv.status = HypervisorStatus::Online;
+                }
+                store.vms.retain(|id, vm| vm.hypervisor_id != "remote-pve-cluster" || active_pve_ids.contains(id));
                 let count = pve_vms.len();
                 for mut vm in pve_vms {
                     if let Some(existing) = store.vms.get(&vm.id) {
@@ -325,17 +335,39 @@ impl AppState {
                 info!("Imported {} VMs from local Proxmox VE node", count);
             }
             Err(e) => {
+                let mut store = self.store.write().await;
+                if let Some(hv) = store.hypervisors.get_mut("remote-pve-cluster") {
+                    hv.status = HypervisorStatus::Offline;
+                }
                 warn!("Could not list VMs from Proxmox VE node: {}", e);
             }
         }
 
-        // 3. Update Proxmox stats directly from API
+        // 3. Update stats directly from drivers
+        if let Ok(stats) = local_driver.get_stats().await {
+            let mut store = self.store.write().await;
+            if let Some(hv) = store.hypervisors.get_mut("local-kvm") {
+                hv.stats = stats;
+            }
+        }
         if let Ok(stats) = pve_driver.get_stats().await {
             let mut store = self.store.write().await;
             if let Some(hv) = store.hypervisors.get_mut("remote-pve-cluster") {
                 hv.stats = stats;
             }
         }
+    }
+
+    pub fn start_periodic_sync(self: &Arc<Self>) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                state.sync_with_kvm().await;
+            }
+        });
     }
 
     pub fn generate_token(&self, user: &User) -> Result<String> {
