@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::drivers::kvm::KvmDriver;
 use crate::drivers::proxmox::ProxmoxDriver;
@@ -155,24 +155,24 @@ impl AppState {
             };
             store.hypervisors.insert(local_hv.id.clone(), local_hv);
 
-            // Register Proxmox VE remote node for cluster demo
+            // Register Proxmox VE node for local cluster
             let remote_pve = Hypervisor {
                 id: "remote-pve-cluster".to_string(),
-                name: "Proxmox-VE-Cluster (Datacenter)".to_string(),
+                name: "Proxmox-VE-Local (pve)".to_string(),
                 hypervisor_type: HypervisorType::Proxmox,
-                endpoint: "https://pve.virtu.lab:8006/api2/json".to_string(),
+                endpoint: "https://192.168.122.62:8006/api2/json".to_string(),
                 status: HypervisorStatus::Online,
                 is_local: false,
                 stats: crate::models::HypervisorStats {
                     cpu_cores: 16,
-                    cpu_usage_pct: 22.0,
-                    memory_total_mb: 32768,
-                    memory_used_mb: 16384,
-                    disk_total_gb: 1000,
-                    disk_used_gb: 420,
-                    active_vms: 3,
-                    total_vms: 4,
-                    uptime_seconds: 86400 * 12,
+                    cpu_usage_pct: 5.0,
+                    memory_total_mb: 24576,
+                    memory_used_mb: 2048,
+                    disk_total_gb: 150,
+                    disk_used_gb: 16,
+                    active_vms: 0,
+                    total_vms: 6,
+                    uptime_seconds: 3600,
                 },
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
@@ -241,27 +241,59 @@ impl AppState {
     }
 
     pub async fn sync_with_kvm(&self) {
-        info!("Synchronizing state with local KVM hypervisor...");
+        info!("Synchronizing state with local KVM and Proxmox VE hypervisors...");
         let local_driver = Arc::new(KvmDriver::new(
             "local-kvm".to_string(),
             "KVM-Host-Local (Debian 13)".to_string(),
             "qemu:///system".to_string(),
         ));
 
-        // Register driver
+        let pve_driver = Arc::new(ProxmoxDriver::new(
+            "remote-pve-cluster".to_string(),
+            "Proxmox-VE-Local (pve)".to_string(),
+            "https://192.168.122.62:8006/api2/json".to_string(),
+        ));
+
+        // Register drivers
         {
             let mut drivers = self.drivers.write().await;
             drivers.insert("local-kvm".to_string(), local_driver.clone());
-
-            let pve_driver = Arc::new(ProxmoxDriver::new(
-                "remote-pve-cluster".to_string(),
-                "Proxmox-VE-Cluster (Datacenter)".to_string(),
-                "https://pve.virtu.lab:8006/api2/json".to_string(),
-            ));
-            drivers.insert("remote-pve-cluster".to_string(), pve_driver);
+            drivers.insert("remote-pve-cluster".to_string(), pve_driver.clone());
         }
 
-        // Query real VMs from libvirt
+        // Ensure Hypervisor metadata is updated in store
+        {
+            let mut store = self.store.write().await;
+            if let Some(hv) = store.hypervisors.get_mut("remote-pve-cluster") {
+                hv.name = "Proxmox-VE-Local (pve)".to_string();
+                hv.endpoint = "https://192.168.122.62:8006/api2/json".to_string();
+                hv.status = HypervisorStatus::Online;
+            } else {
+                let remote_pve = Hypervisor {
+                    id: "remote-pve-cluster".to_string(),
+                    name: "Proxmox-VE-Local (pve)".to_string(),
+                    hypervisor_type: HypervisorType::Proxmox,
+                    endpoint: "https://192.168.122.62:8006/api2/json".to_string(),
+                    status: HypervisorStatus::Online,
+                    is_local: false,
+                    stats: crate::models::HypervisorStats {
+                        cpu_cores: 16,
+                        cpu_usage_pct: 5.0,
+                        memory_total_mb: 24576,
+                        memory_used_mb: 2048,
+                        disk_total_gb: 150,
+                        disk_used_gb: 16,
+                        active_vms: 0,
+                        total_vms: 6,
+                        uptime_seconds: 3600,
+                    },
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                store.hypervisors.insert(remote_pve.id.clone(), remote_pve);
+            }
+        }
+
+        // 1. Query real VMs from libvirt
         if let Ok(vms) = local_driver.list_vms().await {
             let mut store = self.store.write().await;
             for mut vm in vms {
@@ -275,6 +307,34 @@ impl AppState {
                 store.vms.insert(vm.id.clone(), vm);
             }
             info!("Imported {} VMs from local KVM", store.vms.len());
+        }
+
+        // 2. Query real VMs from Proxmox VE
+        match pve_driver.list_vms().await {
+            Ok(pve_vms) => {
+                let mut store = self.store.write().await;
+                let count = pve_vms.len();
+                for mut vm in pve_vms {
+                    if let Some(existing) = store.vms.get(&vm.id) {
+                        if existing.assigned_to.is_some() {
+                            vm.assigned_to = existing.assigned_to.clone();
+                        }
+                    }
+                    store.vms.insert(vm.id.clone(), vm);
+                }
+                info!("Imported {} VMs from local Proxmox VE node", count);
+            }
+            Err(e) => {
+                warn!("Could not list VMs from Proxmox VE node: {}", e);
+            }
+        }
+
+        // 3. Update Proxmox stats directly from API
+        if let Ok(stats) = pve_driver.get_stats().await {
+            let mut store = self.store.write().await;
+            if let Some(hv) = store.hypervisors.get_mut("remote-pve-cluster") {
+                hv.stats = stats;
+            }
         }
     }
 

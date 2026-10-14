@@ -22,12 +22,16 @@ async fn handle_vnc_socket(mut socket: WebSocket, vm_id: String, state: Arc<AppS
     info!("VNC WebSocket connection initiated for VM: {}", vm_id);
 
     // 1. Verify if VM is registered and running
-    let (is_running, default_port) = {
+    let (is_running, default_port, hypervisor_id) = {
         let store = state.store.read().await;
         if let Some(vm) = store.vms.get(&vm_id) {
-            (vm.state == crate::models::VmState::Running, vm.vnc_port)
+            (
+                vm.state == crate::models::VmState::Running,
+                vm.vnc_port,
+                vm.hypervisor_id.clone(),
+            )
         } else {
-            (true, None)
+            (true, None, "local-kvm".to_string())
         }
     };
 
@@ -38,21 +42,21 @@ async fn handle_vnc_socket(mut socket: WebSocket, vm_id: String, state: Arc<AppS
         return;
     }
 
-    // 2. Get live VNC port directly from hypervisor driver
-    let vnc_port = {
-        let local_driver = state.get_driver("local-kvm").await;
-        if let Some(driver) = local_driver {
-            if let Ok(info) = driver.get_vnc_info(&vm_id).await {
-                info.port
+    // 2. Get live VNC host & port directly from the VM's hypervisor driver
+    let (vnc_host, vnc_port) = {
+        let driver = state.get_driver(&hypervisor_id).await;
+        if let Some(drv) = driver {
+            if let Ok(info) = drv.get_vnc_info(&vm_id).await {
+                (info.host, info.port)
             } else {
-                default_port.unwrap_or(5900)
+                ("127.0.0.1".to_string(), default_port.unwrap_or(5900))
             }
         } else {
-            default_port.unwrap_or(5900)
+            ("127.0.0.1".to_string(), default_port.unwrap_or(5900))
         }
     };
 
-    let target_addr = format!("127.0.0.1:{}", vnc_port);
+    let target_addr = format!("{}:{}", vnc_host, vnc_port);
     info!("Connecting VNC proxy to TCP {}", target_addr);
 
     let tcp_stream = match TcpStream::connect(&target_addr).await {

@@ -187,13 +187,13 @@ pub async fn resize_disk(
 pub async fn list_storage_pools(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let driver = state.get_driver("local-kvm").await;
-
-    let pools = if let Some(drv) = driver {
-        drv.list_storage_pools().await.unwrap_or_default()
-    } else {
-        vec![]
-    };
+    let drivers = state.drivers.read().await;
+    let mut pools = Vec::new();
+    for drv in drivers.values() {
+        if let Ok(p) = drv.list_storage_pools().await {
+            pools.extend(p);
+        }
+    }
 
     (
         StatusCode::OK,
