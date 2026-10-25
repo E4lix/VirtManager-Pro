@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use std::process::Stdio;
@@ -7,9 +7,10 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tracing::info;
 
+use crate::api::auth::extract_claims;
 use crate::models::{
     ApiResponse, BackgroundTask, CreateVmRequest, DeployTemplateRequest, TaskStatus,
-    Template, TemplateStatus,
+    Template, TemplateStatus, UserRole,
 };
 use crate::state::AppState;
 
@@ -76,13 +77,29 @@ pub async fn get_template(
     path = "/api/templates/{id}/build",
     responses(
         (status = 202, description = "Packer & Ansible build started", body = ApiResponse<BackgroundTask>),
+        (status = 403, description = "Forbidden (Admin only)"),
         (status = 404, description = "Template not found")
     )
 )]
 pub async fn trigger_template_build(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
+    if let Some(ref c) = claims {
+        if c.role != UserRole::Admin {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ApiResponse {
+                    success: false,
+                    message: "Action réservée aux administrateurs. Seul l'administrateur peut déclencher la création de templates.".to_string(),
+                    data: None,
+                }),
+            );
+        }
+    }
+
     let tpl = {
         let store = state.store.read().await;
         store.templates.get(&id).cloned()
@@ -234,10 +251,22 @@ pub async fn trigger_template_build(
     )
 )]
 pub async fn deploy_template(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
     Json(payload): Json<DeployTemplateRequest>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
+    let assigned_to = if let Some(ref c) = claims {
+        if c.role == UserRole::User {
+            Some(c.username.clone())
+        } else {
+            payload.assigned_to.clone()
+        }
+    } else {
+        payload.assigned_to.clone()
+    };
+
     let tpl = {
         let store = state.store.read().await;
         store.templates.get(&id).cloned()
@@ -263,14 +292,14 @@ pub async fn deploy_template(
         disk_format: Some("qcow2".to_string()),
         template_id: Some(id),
         os_type: Some(template.os.clone()),
-        assigned_to: payload.assigned_to.clone(),
+        assigned_to: assigned_to.clone(),
     };
 
     let driver = state.get_driver(&payload.hypervisor_id).await;
     if let Some(drv) = driver {
         match drv.create_vm(&vm_req).await {
             Ok(mut new_vm) => {
-                new_vm.assigned_to = payload.assigned_to;
+                new_vm.assigned_to = assigned_to;
                 {
                     let mut store = state.store.write().await;
                     store.vms.insert(new_vm.id.clone(), new_vm);

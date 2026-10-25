@@ -67,16 +67,31 @@ pub async fn list_vms(
     path = "/api/vms/{id}",
     responses(
         (status = 200, description = "VM details", body = ApiResponse<VirtualMachine>),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "VM not found")
     )
 )]
 pub async fn get_vm(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
     let store = state.store.read().await;
 
     if let Some(vm) = store.vms.get(&id) {
+        if let Some(ref c) = claims {
+            if c.role == UserRole::User && vm.assigned_to.as_deref() != Some(&c.username) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ApiResponse {
+                        success: false,
+                        message: "Accès refusé: cette machine virtuelle ne vous est pas attribuée".to_string(),
+                        data: None,
+                    }),
+                );
+            }
+        }
         return (
             StatusCode::OK,
             Json(ApiResponse {
@@ -107,15 +122,26 @@ pub async fn get_vm(
     )
 )]
 pub async fn create_vm(
+    headers: HeaderMap,
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CreateVmRequest>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
     let driver = state.get_driver(&payload.hypervisor_id).await;
 
     if let Some(drv) = driver {
         match drv.create_vm(&payload).await {
             Ok(mut new_vm) => {
-                new_vm.assigned_to = payload.assigned_to.clone();
+                if let Some(ref c) = claims {
+                    if c.role == UserRole::User {
+                        new_vm.assigned_to = Some(c.username.clone());
+                    } else {
+                        new_vm.assigned_to = payload.assigned_to.clone();
+                    }
+                } else {
+                    new_vm.assigned_to = payload.assigned_to.clone();
+                }
+
                 {
                     let mut store = state.store.write().await;
                     store.vms.insert(new_vm.id.clone(), new_vm.clone());
@@ -159,16 +185,31 @@ pub async fn create_vm(
     path = "/api/vms/{id}/start",
     responses(
         (status = 200, description = "VM started", body = ApiResponse<bool>),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "VM not found")
     )
 )]
 pub async fn start_vm(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
     let (hypervisor_id, vm_name) = {
         let store = state.store.read().await;
         if let Some(vm) = store.vms.get(&id) {
+            if let Some(ref c) = claims {
+                if c.role == UserRole::User && vm.assigned_to.as_deref() != Some(&c.username) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ApiResponse {
+                            success: false,
+                            message: "Accès refusé: cette machine virtuelle ne vous est pas attribuée".to_string(),
+                            data: None,
+                        }),
+                    );
+                }
+            }
             (vm.hypervisor_id.clone(), vm.name.clone())
         } else {
             return (
@@ -208,16 +249,31 @@ pub async fn start_vm(
     path = "/api/vms/{id}/stop",
     responses(
         (status = 200, description = "VM stopped", body = ApiResponse<bool>),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "VM not found")
     )
 )]
 pub async fn stop_vm(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
     let (hypervisor_id, vm_name) = {
         let store = state.store.read().await;
         if let Some(vm) = store.vms.get(&id) {
+            if let Some(ref c) = claims {
+                if c.role == UserRole::User && vm.assigned_to.as_deref() != Some(&c.username) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ApiResponse {
+                            success: false,
+                            message: "Accès refusé: cette machine virtuelle ne vous est pas attribuée".to_string(),
+                            data: None,
+                        }),
+                    );
+                }
+            }
             (vm.hypervisor_id.clone(), vm.name.clone())
         } else {
             return (
@@ -257,16 +313,31 @@ pub async fn stop_vm(
     path = "/api/vms/{id}/reboot",
     responses(
         (status = 200, description = "VM rebooted", body = ApiResponse<bool>),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "VM not found")
     )
 )]
 pub async fn reboot_vm(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
     let (hypervisor_id, vm_name) = {
         let store = state.store.read().await;
         if let Some(vm) = store.vms.get(&id) {
+            if let Some(ref c) = claims {
+                if c.role == UserRole::User && vm.assigned_to.as_deref() != Some(&c.username) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ApiResponse {
+                            success: false,
+                            message: "Accès refusé: cette machine virtuelle ne vous est pas attribuée".to_string(),
+                            data: None,
+                        }),
+                    );
+                }
+            }
             (vm.hypervisor_id.clone(), vm.name.clone())
         } else {
             return (
@@ -299,16 +370,31 @@ pub async fn reboot_vm(
     path = "/api/vms/{id}",
     responses(
         (status = 200, description = "VM deleted", body = ApiResponse<bool>),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "VM not found")
     )
 )]
 pub async fn delete_vm(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
     let (hypervisor_id, vm_name) = {
         let store = state.store.read().await;
         if let Some(vm) = store.vms.get(&id) {
+            if let Some(ref c) = claims {
+                if c.role == UserRole::User && vm.assigned_to.as_deref() != Some(&c.username) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ApiResponse {
+                            success: false,
+                            message: "Accès refusé: vous ne pouvez pas supprimer une machine virtuelle qui ne vous appartient pas".to_string(),
+                            data: None,
+                        }),
+                    );
+                }
+            }
             (vm.hypervisor_id.clone(), vm.name.clone())
         } else {
             return (
@@ -348,17 +434,32 @@ pub async fn delete_vm(
     request_body = CloneVmRequest,
     responses(
         (status = 201, description = "VM cloned", body = ApiResponse<VirtualMachine>),
+        (status = 403, description = "Forbidden"),
         (status = 400, description = "Clone failed")
     )
 )]
 pub async fn clone_vm(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CloneVmRequest>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
     let (hypervisor_id, vm_name) = {
         let store = state.store.read().await;
         if let Some(vm) = store.vms.get(&id) {
+            if let Some(ref c) = claims {
+                if c.role == UserRole::User && vm.assigned_to.as_deref() != Some(&c.username) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ApiResponse {
+                            success: false,
+                            message: "Accès refusé: vous ne pouvez cloner qu'une machine virtuelle qui vous est attribuée".to_string(),
+                            data: None,
+                        }),
+                    );
+                }
+            }
             (vm.hypervisor_id.clone(), vm.name.clone())
         } else {
             return (
@@ -375,7 +476,16 @@ pub async fn clone_vm(
     if let Some(drv) = state.get_driver(&hypervisor_id).await {
         match drv.clone_vm(&vm_name, &payload.new_name).await {
             Ok(mut cloned_vm) => {
-                cloned_vm.assigned_to = payload.assigned_to.clone();
+                if let Some(ref c) = claims {
+                    if c.role == UserRole::User {
+                        cloned_vm.assigned_to = Some(c.username.clone());
+                    } else {
+                        cloned_vm.assigned_to = payload.assigned_to.clone();
+                    }
+                } else {
+                    cloned_vm.assigned_to = payload.assigned_to.clone();
+                }
+
                 {
                     let mut store = state.store.write().await;
                     store.vms.insert(cloned_vm.id.clone(), cloned_vm.clone());
@@ -420,14 +530,30 @@ pub async fn clone_vm(
     request_body = AssignVmRequest,
     responses(
         (status = 200, description = "VM assigned to user", body = ApiResponse<VirtualMachine>),
+        (status = 403, description = "Forbidden (Admin only)"),
         (status = 404, description = "VM not found")
     )
 )]
 pub async fn assign_vm(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AssignVmRequest>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
+    if let Some(ref c) = claims {
+        if c.role != UserRole::Admin {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ApiResponse {
+                    success: false,
+                    message: "Action réservée aux administrateurs. Seul l'administrateur peut attribuer ou transférer une VM.".to_string(),
+                    data: None,
+                }),
+            );
+        }
+    }
+
     let mut store = state.store.write().await;
 
     if let Some(vm) = store.vms.get_mut(&id) {
@@ -461,16 +587,31 @@ pub async fn assign_vm(
     path = "/api/vms/{id}/vnc",
     responses(
         (status = 200, description = "VNC connection info", body = ApiResponse<serde_json::Value>),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "VM not found")
     )
 )]
 pub async fn get_vm_vnc(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
     let (hypervisor_id, vm_name, vnc_port) = {
         let store = state.store.read().await;
         if let Some(vm) = store.vms.get(&id) {
+            if let Some(ref c) = claims {
+                if c.role == UserRole::User && vm.assigned_to.as_deref() != Some(&c.username) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ApiResponse {
+                            success: false,
+                            message: "Accès à la console VNC réservé au propriétaire de la machine virtuelle".to_string(),
+                            data: None,
+                        }),
+                    );
+                }
+            }
             (vm.hypervisor_id.clone(), vm.name.clone(), vm.vnc_port)
         } else {
             return (
@@ -511,17 +652,32 @@ pub async fn get_vm_vnc(
     request_body = AttachDiskRequest,
     responses(
         (status = 200, description = "Disk attached to VM", body = ApiResponse<bool>),
+        (status = 403, description = "Forbidden"),
         (status = 400, description = "Failed to attach disk")
     )
 )]
 pub async fn attach_disk_to_vm(
+    headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AttachDiskRequest>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
     let (hypervisor_id, vm_name) = {
         let store = state.store.read().await;
         if let Some(vm) = store.vms.get(&id) {
+            if let Some(ref c) = claims {
+                if c.role == UserRole::User && vm.assigned_to.as_deref() != Some(&c.username) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ApiResponse {
+                            success: false,
+                            message: "Accès refusé: cette machine virtuelle ne vous est pas attribuée".to_string(),
+                            data: None,
+                        }),
+                    );
+                }
+            }
             (vm.hypervisor_id.clone(), vm.name.clone())
         } else {
             return (
@@ -584,16 +740,31 @@ pub async fn attach_disk_to_vm(
     path = "/api/vms/{id}/disks/{target}",
     responses(
         (status = 200, description = "Disk detached from VM", body = ApiResponse<bool>),
+        (status = 403, description = "Forbidden"),
         (status = 400, description = "Failed to detach disk")
     )
 )]
 pub async fn detach_disk_from_vm(
+    headers: HeaderMap,
     Path((id, target)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let claims = extract_claims(&headers, &state);
     let (hypervisor_id, vm_name) = {
         let store = state.store.read().await;
         if let Some(vm) = store.vms.get(&id) {
+            if let Some(ref c) = claims {
+                if c.role == UserRole::User && vm.assigned_to.as_deref() != Some(&c.username) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ApiResponse {
+                            success: false,
+                            message: "Accès refusé: cette machine virtuelle ne vous est pas attribuée".to_string(),
+                            data: None,
+                        }),
+                    );
+                }
+            }
             (vm.hypervisor_id.clone(), vm.name.clone())
         } else {
             return (
@@ -647,3 +818,4 @@ pub async fn detach_disk_from_vm(
         }),
     )
 }
+

@@ -33,7 +33,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState({
     username: 'admin',
     role: 'admin',
-    token: 'mock-admin-token',
+    token: null,
   });
 
   const [hypervisors, setHypervisors] = useState([]);
@@ -101,17 +101,41 @@ export default function App() {
     assigned_to: '',
   });
 
+  // Switch user dynamically with real JWT login
+  const switchUser = async (role) => {
+    const username = role === 'admin' ? 'admin' : 'user1';
+    const password = username;
+    try {
+      const res = await api.login(username, password);
+      if (res.success && res.data) {
+        setCurrentUser({
+          username: res.data.user.username,
+          role: res.data.user.role,
+          token: res.data.token,
+        });
+      }
+    } catch (e) {
+      console.error('Error logging in:', e);
+    }
+  };
+
+  // Initial login on mount
+  useEffect(() => {
+    switchUser('admin');
+  }, []);
+
   // Fetch data
   const refreshAll = async () => {
     try {
+      const token = currentUser.token;
       const [hRes, vRes, dRes, pRes, tRes, taskRes, uRes] = await Promise.all([
-        api.listHypervisors(),
-        api.listVms(currentUser.token),
-        api.listDisks(),
-        api.listStoragePools(),
-        api.listTemplates(),
-        api.listTasks(),
-        api.listUsers(),
+        api.listHypervisors(token),
+        api.listVms(token),
+        api.listDisks(token),
+        api.listStoragePools(token),
+        api.listTemplates(token),
+        api.listTasks(token),
+        api.listUsers(token),
       ]);
 
       if (hRes.data) setHypervisors(hRes.data);
@@ -137,10 +161,14 @@ export default function App() {
   };
 
   useEffect(() => {
-    refreshAll();
-    const interval = setInterval(refreshAll, 5000);
+    if (currentUser.token) {
+      refreshAll();
+    }
+    const interval = setInterval(() => {
+      if (currentUser.token) refreshAll();
+    }, 5000);
     return () => clearInterval(interval);
-  }, [currentUser.role]);
+  }, [currentUser.token]);
 
   // Aggregate stats
   const totalVms = vms.length;
@@ -157,31 +185,38 @@ export default function App() {
 
   // Actions
   const handleStartVm = async (id) => {
-    await api.startVm(id);
+    const res = await api.startVm(id, currentUser.token);
+    if (res && !res.success) alert(res.message);
     refreshAll();
   };
 
   const handleStopVm = async (id) => {
-    await api.stopVm(id);
+    const res = await api.stopVm(id, currentUser.token);
+    if (res && !res.success) alert(res.message);
     refreshAll();
   };
 
   const handleRebootVm = async (id) => {
-    await api.rebootVm(id);
+    const res = await api.rebootVm(id, currentUser.token);
+    if (res && !res.success) alert(res.message);
     refreshAll();
   };
 
   const handleDeleteVm = async (id) => {
     if (confirm(`Confirmez-vous la suppression de la VM '${id}' ?`)) {
-      await api.deleteVm(id);
-      setSelectedVmId(null);
-      refreshAll();
+      const res = await api.deleteVm(id, currentUser.token);
+      if (res && !res.success) {
+        alert(res.message);
+      } else {
+        setSelectedVmId(null);
+        refreshAll();
+      }
     }
   };
 
   const handleCreateVmSubmit = async (e) => {
     e.preventDefault();
-    await api.createVm({
+    const res = await api.createVm({
       name: formVm.name,
       hypervisor_id: formVm.hypervisor_id,
       vcpus: Number(formVm.vcpus),
@@ -191,15 +226,20 @@ export default function App() {
       template_id: formVm.template_id || null,
       os_type: formVm.os_type,
       assigned_to: formVm.assigned_to || null,
-    });
-    setModalCreateVm(false);
-    refreshAll();
+    }, currentUser.token);
+    if (res && !res.success) {
+      alert(res.message);
+    } else {
+      setModalCreateVm(false);
+      refreshAll();
+    }
   };
 
   const handleAttachDiskSubmit = async (e) => {
     e.preventDefault();
     if (!selectedVm || !formAttachDisk.disk_path) return;
-    await api.attachDiskToVm(selectedVm.id, formAttachDisk.disk_path, formAttachDisk.target_dev);
+    const res = await api.attachDiskToVm(selectedVm.id, formAttachDisk.disk_path, formAttachDisk.target_dev, currentUser.token);
+    if (res && !res.success) alert(res.message);
     setModalAttachDisk(false);
     refreshAll();
   };
@@ -207,7 +247,8 @@ export default function App() {
   const handleDetachDisk = async (targetDev) => {
     if (!selectedVm) return;
     if (confirm(`Confirmez-vous le détachement du disque '${targetDev}' de la VM '${selectedVm.name}' ?`)) {
-      await api.detachDiskFromVm(selectedVm.id, targetDev);
+      const res = await api.detachDiskFromVm(selectedVm.id, targetDev, currentUser.token);
+      if (res && !res.success) alert(res.message);
       refreshAll();
     }
   };
@@ -255,41 +296,53 @@ export default function App() {
   const handleCloneSubmit = async (e) => {
     e.preventDefault();
     if (!selectedVm) return;
-    await api.cloneVm(selectedVm.id, formClone.new_name, formClone.assigned_to || null);
-    setModalCloneVm(false);
-    refreshAll();
+    const res = await api.cloneVm(selectedVm.id, formClone.new_name, formClone.assigned_to || null, currentUser.token);
+    if (res && !res.success) {
+      alert(res.message);
+    } else {
+      setModalCloneVm(false);
+      refreshAll();
+    }
   };
 
   const handleAssignSubmit = async (e) => {
     e.preventDefault();
     if (!selectedVm) return;
-    await api.assignVm(selectedVm.id, formAssign.username);
-    setModalAssignVm(false);
-    refreshAll();
+    const res = await api.assignVm(selectedVm.id, formAssign.username, currentUser.token);
+    if (res && !res.success) {
+      alert(res.message);
+    } else {
+      setModalAssignVm(false);
+      refreshAll();
+    }
   };
 
   const handleCreateDiskSubmit = async (e) => {
     e.preventDefault();
-    await api.createDisk({
+    const res = await api.createDisk({
       name: formDisk.name,
       pool_name: formDisk.pool_name,
       size_gb: Number(formDisk.size_gb),
       format: formDisk.format,
-    });
+    }, currentUser.token);
+    if (res && !res.success) alert(res.message);
     setModalCreateDisk(false);
     refreshAll();
   };
 
   const handleResizeDiskSubmit = async (e) => {
     e.preventDefault();
-    await api.resizeDisk(formResize.disk_path, Number(formResize.new_size_gb));
+    const res = await api.resizeDisk(formResize.disk_path, Number(formResize.new_size_gb), currentUser.token);
+    if (res && !res.success) alert(res.message);
     setModalResizeDisk(false);
     refreshAll();
   };
 
   const handleTriggerBuild = async (templateId) => {
-    const res = await api.triggerTemplateBuild(templateId);
-    if (res.data) {
+    const res = await api.triggerTemplateBuild(templateId, currentUser.token);
+    if (res && !res.success) {
+      alert(res.message);
+    } else if (res?.data) {
       setActiveTaskLog(res.data);
       refreshAll();
     }
@@ -297,13 +350,17 @@ export default function App() {
 
   const handleDeployTemplateSubmit = async (e) => {
     e.preventDefault();
-    await api.deployTemplate(formDeployTpl.template_id, {
+    const res = await api.deployTemplate(formDeployTpl.template_id, {
       vm_name: formDeployTpl.vm_name,
       hypervisor_id: formDeployTpl.hypervisor_id,
       assigned_to: formDeployTpl.assigned_to || null,
-    });
-    setModalDeployTemplate(false);
-    refreshAll();
+    }, currentUser.token);
+    if (res && !res.success) {
+      alert(res.message);
+    } else {
+      setModalDeployTemplate(false);
+      refreshAll();
+    }
   };
 
   return (
@@ -361,14 +418,7 @@ export default function App() {
             <Shield size={14} color="#38bdf8" />
             <select
               value={currentUser.role}
-              onChange={(e) => {
-                const role = e.target.value;
-                setCurrentUser({
-                  username: role === 'admin' ? 'admin' : 'user1',
-                  role,
-                  token: role === 'admin' ? 'mock-admin-token' : 'mock-user-token',
-                });
-              }}
+              onChange={(e) => switchUser(e.target.value)}
               style={{
                 background: 'transparent',
                 color: 'white',
